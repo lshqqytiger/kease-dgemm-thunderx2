@@ -19,13 +19,13 @@ all: $(OUTPUTS_EXECUTABLE)
 shared: $(OUTPUTS_SHARED)
 
 # executables
-#$(OUTPUT_PATH)/cblas.out: dgemm_profiling.c $(KERNEL_PATH)/cblas.c
-#	$(CC) -o $@ $^ $(CFLAGS) -DKERNEL=\"cblas\"
+$(OUTPUT_PATH)/cblas.out: dgemm_flops.c $(KERNEL_PATH)/cblas.c
+	$(CC) -o $@ $^ $(CFLAGS) -DKERNEL=\"cblas\"
 
-#$(OUTPUT_PATH)/play.out: dgemm_profiling.c $(KERNEL_PATH)/play.c
-#	$(CC) -o $@ $^ $(CFLAGS) -DKERNEL=\"play\"
+$(OUTPUT_PATH)/play.out: dgemm_flops.c $(KERNEL_PATH)/play.c
+	$(CC) -o $@ $^ $(CFLAGS) -DKERNEL=\"play\"
 
-$(OUTPUT_PATH)/%.out: dgemm_profiling.c $(KERNEL_PATH)/%.c
+$(OUTPUT_PATH)/%.out: dgemm_flops.c $(KERNEL_PATH)/%.c
 	$(CC) -o $@ $^ $(CFLAGS) -g #-DKERNEL=\"$@\" -DVERIFY
 
 # shared objects

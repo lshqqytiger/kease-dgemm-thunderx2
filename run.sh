@@ -8,7 +8,8 @@ export OMP_NUM_THREADS=64
 
 OUT_PATH=./out
 
-for kernel in $@; do
+#for kernel in $@; do
+for kernel in kernel.latest; do
   path=${OUT_PATH}/${kernel}.out
   make -s ${path}
 
@@ -17,6 +18,6 @@ for kernel in $@; do
     n=$size
     k=$size
 
-    ${path} 64 Row N N $m $n $k 1.0 1.0 1
+    ${path} 64 Row N N $m $n $k 1.0 1.0 5
   done
 done
