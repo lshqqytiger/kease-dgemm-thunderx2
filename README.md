@@ -47,4 +47,4 @@ TBA
 
 ## Multi-core
 
-TBA
+![Multi-core plot](resources/thunderx2.png)
