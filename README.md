@@ -7,6 +7,7 @@ Auto-tuned Double-precision General Matrix-Matrix Multiplication kernels for Mar
 - [GNU Make](https://www.gnu.org/software/make)
 - [Arm Compiler](https://developer.arm.com/documentation/ka005198/latest)
 - [Arm Performance Libraries](https://developer.arm.com/Tools%20and%20Software/Arm%20Performance%20Libraries)
+- [OpenMP](https://www.openmp.org)
 - [NUMA](https://github.com/numactl/numactl)
 
 # Build
