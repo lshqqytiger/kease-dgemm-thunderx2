@@ -24,10 +24,6 @@
 
 #include <arm_neon.h>
 #include <armpl.h>
-#include <numa.h>
-#include <pthread.h>
-#include <omp.h>
-#include <sched.h>
 
 #define HANDLE_ERROR(expr)  \
     do                      \
@@ -48,12 +44,12 @@
 #define UNLIKELY(expr) __builtin_expect(!!(expr), 0)
 #define LIKELY(expr) __builtin_expect(!!(expr), 1)
 
-#define TOTAL_CORE 64
+#define TOTAL_CORE 1
 
-#define NUMA_NODE 2
+#define NUMA_NODE 1
 
 #ifndef CM
-#define CM 8
+#define CM 1
 #endif
 
 #define CN (TOTAL_CORE / CM)
@@ -221,9 +217,6 @@ void micro_kernel(
               [v10] "+w"(v10), [v11] "+w"(v11), [v12] "+w"(v12), [v13] "+w"(v13), [v14] "+w"(v14), [v15] "+w"(v15), [v16] "+w"(v16), [v17] "+w"(v17), [v18] "+w"(v18), [v19] "+w"(v19),
               [v20] "+w"(v20), [v21] "+w"(v21), [v22] "+w"(v22), [v23] "+w"(v23), [v24] "+w"(v24), [v25] "+w"(v25), [v26] "+w"(v26), [v27] "+w"(v27));
     }
-
-    //    __builtin_prefetch(A_next + 0x00, 0, 3);
-    //    __builtin_prefetch(B_next + 0x00, 0, 3);
 
     asm volatile(
         " ldr      q16, [%[C0]]          \t\n"
@@ -432,10 +425,7 @@ void pack_arc(
                       [A1] "+r"(A1),
                       [A2] "+r"(A2),
                       [A3] "+r"(A3),
-                      [_A] "+r"(_A_now)
-                    :
-                    //                : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "memory"
-                );
+                      [_A] "+r"(_A_now));
             }
             else
             {
@@ -508,41 +498,29 @@ void pack_brr(
     }
 }
 
-struct thread_info
+void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
+                CBLAS_TRANSPOSE TransB, int64_t m, int64_t n, int64_t k,
+                double alpha, const double *A, int64_t lda, const double *B,
+                int64_t ldb, double beta, double *C, int64_t ldc)
 {
-    pthread_t thread_id;
-    uint64_t nid;
-    uint64_t m;
-    uint64_t n;
-    uint64_t k;
-    const double *A;
-    uint64_t lda;
-    const double *B;
-    uint64_t ldb;
-    double *restrict C;
-    uint64_t ldc;
-};
+    const uint64_t is_C_row = (layout == CblasRowMajor ? 1 : 0);
+    const uint64_t is_A_row = (TransA == CblasTrans ? !is_C_row : is_C_row);
+    const uint64_t is_B_row = (TransB == CblasTrans ? !is_C_row : is_C_row);
 
-static void *middle_kernel(
-    void *arg)
-{
-    struct thread_info *tinfo = arg;
-    const uint64_t nid = tinfo->nid;
-    const uint64_t m = tinfo->m;
-    const uint64_t n = tinfo->n;
-    const uint64_t k = tinfo->k;
-    const double *A = tinfo->A;
-    const uint64_t lda = tinfo->lda;
-    const double *B = tinfo->B;
-    const uint64_t ldb = tinfo->ldb;
-    double *C = tinfo->C;
-    const uint64_t ldc = tinfo->ldc;
+    assert(is_A_row == 1);
+    assert(is_B_row == 1);
+    assert(is_C_row == 1);
+    assert(alpha == 1.0);
+    assert(beta == 1.0);
 
-    double *_A;
-    double *_B;
+    static double *_A = NULL;
+    static double *_B;
 
-    _A = numa_alloc_onnode(sizeof(double) * (MB + MR) * KB, nid);
-    _B = numa_alloc_onnode(sizeof(double) * KB * (NB + NR), nid);
+    if (_A == NULL)
+    {
+        posix_memalign((void **)&_A, PAGE_SIZE, sizeof(double) * (MB + MR) * KB);
+        posix_memalign((void **)&_B, PAGE_SIZE, sizeof(double) * KB * (NB + NR));
+    }
 
     const uint64_t mc = (m + MB - 1) / MB;
     const uint64_t mr = m % MB;
@@ -570,93 +548,5 @@ static void *middle_kernel(
                 inner_kernel(mm, nn, kk, _A, _B, C + mi * MB * ldc + ni * NB, ldc);
             }
         }
-    }
-
-    numa_free(_A, nid);
-    numa_free(_B, nid);
-
-    return NULL;
-}
-
-uint64_t min(uint64_t a, uint64_t b)
-{
-    return a < b ? a : b;
-}
-
-void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
-                CBLAS_TRANSPOSE TransB, int64_t m, int64_t n, int64_t k,
-                double alpha, const double *A, int64_t lda, const double *B,
-                int64_t ldb, double beta, double *C, int64_t ldc)
-{
-    const uint64_t is_C_row = (layout == CblasRowMajor ? 1 : 0);
-    const uint64_t is_A_row = (TransA == CblasTrans ? !is_C_row : is_C_row);
-    const uint64_t is_B_row = (TransB == CblasTrans ? !is_C_row : is_C_row);
-
-    assert(is_A_row == 1);
-    assert(is_B_row == 1);
-    assert(is_C_row == 1);
-    assert(alpha == 1.0);
-    assert(beta == 1.0);
-
-    const uint64_t total_m_jobs = (m + MR - 1) / MR;
-    const uint64_t min_each_m_jobs = total_m_jobs / CM;
-    const uint64_t rest_m_jobs = total_m_jobs % CM;
-
-    const uint64_t total_n_jobs = (n + NR - 1) / NR;
-    const uint64_t min_each_n_jobs = total_n_jobs / CN;
-    const uint64_t rest_n_jobs = total_n_jobs % CN;
-
-    struct thread_info tinfo[TOTAL_CORE];
-    cpu_set_t mask;
-
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-
-    for (uint64_t pid = 0; pid < TOTAL_CORE; ++pid)
-    {
-        const uint64_t nid = pid / (CM * CN / NUMA_NODE);
-        const uint64_t m_pid = pid % CM;
-        const uint64_t n_pid = pid / CM;
-
-        const uint64_t my_m_idx_start = (m_pid)*min_each_m_jobs + min(m_pid, rest_m_jobs);
-        const uint64_t my_m_idx_end = (m_pid + 1) * min_each_m_jobs + min(m_pid + 1, rest_m_jobs);
-        const uint64_t my_m_start = min(my_m_idx_start * MR, m);
-        const uint64_t my_m_end = min(my_m_idx_end * MR, m);
-        const uint64_t my_m_size = my_m_end - my_m_start;
-
-        const uint64_t my_n_idx_start = (n_pid)*min_each_n_jobs + min(n_pid, rest_n_jobs);
-        const uint64_t my_n_idx_end = (n_pid + 1) * min_each_n_jobs + min(n_pid + 1, rest_n_jobs);
-        const uint64_t my_n_start = min(my_n_idx_start * NR, n);
-        const uint64_t my_n_end = min(my_n_idx_end * NR, n);
-        const uint64_t my_n_size = my_n_end - my_n_start;
-
-        const double *A_start = A + my_m_start * lda;
-        const double *B_start = B + my_n_start * 1;
-        double *C_start = C + my_m_start * ldc + my_n_start * 1;
-
-        tinfo[pid].nid = nid;
-        tinfo[pid].m = my_m_size;
-        tinfo[pid].n = my_n_size;
-        tinfo[pid].k = k;
-        tinfo[pid].A = A_start;
-        tinfo[pid].lda = lda;
-        tinfo[pid].B = B_start;
-        tinfo[pid].ldb = ldb;
-        tinfo[pid].C = C_start;
-        tinfo[pid].ldc = ldc;
-
-        CPU_ZERO(&mask);
-        CPU_SET(pid, &mask);
-
-        HANDLE_ERROR(pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &mask));
-        HANDLE_ERROR(pthread_create(&tinfo[pid].thread_id, &attr, &middle_kernel, &tinfo[pid]));
-    }
-
-    HANDLE_ERROR(pthread_attr_destroy(&attr));
-
-    for (uint64_t pid = 0; pid < TOTAL_CORE; ++pid)
-    {
-        void *res;
-        HANDLE_ERROR(pthread_join(tinfo[pid].thread_id, &res));
     }
 }

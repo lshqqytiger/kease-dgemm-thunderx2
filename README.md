@@ -44,8 +44,8 @@ You can also benchmark the shared library using [benchmark-dgemm](https://github
 
 ## Single-core
 
-TBA
+![Single-core plot](resources/single-core.png)
 
 ## Multi-core
 
-![Multi-core plot](resources/thunderx2.png)
+![Multi-core plot](resources/multi-core.png)
