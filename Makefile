@@ -26,7 +26,7 @@ $(OUTPUT_PATH)/play.out: dgemm_flops.c $(KERNEL_PATH)/play.c
 	$(CC) -o $@ $^ $(CFLAGS) -DKERNEL=\"play\"
 
 $(OUTPUT_PATH)/%.out: dgemm_flops.c $(KERNEL_PATH)/%.c
-	$(CC) -o $@ $^ $(CFLAGS) -g #-DKERNEL=\"$@\" -DVERIFY
+	$(CC) -o $@ $^ $(CFLAGS) -DKERNEL=\"$@\" -DVERIFY
 
 # shared objects
 $(OUTPUT_PATH)/cblas.so: $(KERNEL_PATH)/cblas.c

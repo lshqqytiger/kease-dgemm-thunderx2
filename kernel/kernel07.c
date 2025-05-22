@@ -16,22 +16,18 @@
 
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <stdio.h>
 #include <assert.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <string.h>
 
 #include <arm_neon.h>
 #include <armpl.h>
 #include <numa.h>
 #include <pthread.h>
-#include <omp.h>
-#include <sched.h>
 
-#define HANDLE_ERROR(expr)  \
+#define PTHREAD_CALL(expr)  \
     do                      \
     {                       \
         int err = (expr);   \
@@ -43,20 +39,10 @@
         exit(EXIT_FAILURE); \
     } while (0)
 
-#define PAGE_SIZE 4096
-#define CACHE_LINE 64
-#define CACHE_ELEM (CACHE_LINE / 8)
-
 #define UNLIKELY(expr) __builtin_expect(!!(expr), 0)
 #define LIKELY(expr) __builtin_expect(!!(expr), 1)
 
-bool track(const char *expr, bool value)
-{
-    printf("%s: %s\n", expr, value ? "true" : "false");
-    return expr;
-}
-
-#define TRACK(expr) track(#expr, expr)
+#define ROUND_UP(a, b) ((a + b - 1) / b)
 
 #define READ 0
 #define WRITE 1
@@ -66,10 +52,15 @@ bool track(const char *expr, bool value)
 #define LOCALITY_MODERATE 2
 #define LOCALITY_HIGH 3
 
+#define PAGE_SIZE 4096
+#define CACHE_LINE 64
+#define CACHE_ELEM (CACHE_LINE / 8)
+
 #define TOTAL_CORE 64
 
 #define NUMA_NODE 2
 
+// tunable parameters
 #ifndef CM
 #define CM 8
 #endif
@@ -84,22 +75,45 @@ bool track(const char *expr, bool value)
 #endif
 
 #ifndef NB
-#define NB (NR * 42)
+#define NB (NR * 43)
 #endif
 
 #ifndef KB
 #define KB 280
 #endif
 
+#define MK_PRELOAD_A
+#define MK_PRELOAD_B
+#define MK_PREFETCH_C
+
+#ifndef MK_PREFETCH_A_DISTANCE
+#define MK_PREFETCH_A_DISTANCE ((MR * 2) * 5)
+#endif
+
+#ifndef MK_PREFETCH_B_DISTANCE
+#define MK_PREFETCH_B_DISTANCE ((NR * 2) * 5)
+#endif
+
+// 0 ~ 4
+#ifndef MK_PREFETCH_B_DEPTH
+#define MK_PREFETCH_B_DEPTH 2
+#endif
+
+#ifndef ARC_PREFETCH_DEPTH
+#define ARC_PREFETCH_DEPTH 4
+#endif
+
+#ifndef ARC_PREFETCH_LOCALITY
+#define ARC_PREFETCH_LOCALITY LOCALITY_NONE
+#endif
+// tunable parameters
+
 void micro_kernel(
     const uint64_t kk,
     const double *restrict _A,
     const double *restrict _B,
     double *restrict C,
-    const uint64_t ldc /*,
-     const double *restrict A_next,
-     const double *restrict B_next*/
-)
+    const uint64_t ldc)
 {
     register double *C0 = C + 0 * ldc;
     register double *C1 = C + 1 * ldc;
@@ -139,67 +153,71 @@ void micro_kernel(
     register float64x2_t v30 asm("v30");
     register float64x2_t v31 asm("v31");
 
+#ifdef MK_PREFETCH_C
     __builtin_prefetch(C0, READ, LOCALITY_HIGH);
     __builtin_prefetch(C1, READ, LOCALITY_HIGH);
     __builtin_prefetch(C2, READ, LOCALITY_HIGH);
     __builtin_prefetch(C3, READ, LOCALITY_HIGH);
+#endif
 
     asm volatile(
-        " ldr      q16, [%[B]]      \t\n"
-        " ldr      q17, [%[B], #16] \t\n"
-        " ldr      q18, [%[B], #32] \t\n"
-        " ldr      q19, [%[B], #48] \t\n"
-        " add     %[B],  %[B], #64  \t\n"
-        " movi   v0.2d,  #0         \t\n"
-        " movi   v1.2d,  #0         \t\n"
-        " movi   v2.2d,  #0         \t\n"
-        " movi   v3.2d,  #0         \t\n"
-        " movi   v4.2d,  #0         \t\n"
-        " movi   v5.2d,  #0         \t\n"
-        " ldr      q24, [%[A]]      \t\n"
-        " movi   v6.2d,  #0         \t\n"
-        " movi   v7.2d,  #0         \t\n"
-        " movi   v8.2d,  #0         \t\n"
-        " movi   v9.2d,  #0         \t\n"
-        " movi  v10.2d,  #0         \t\n"
-        " movi  v11.2d,  #0         \t\n"
-        " ldr      q25, [%[A], #16] \t\n"
-        " add     %[A],  %[A], #32  \t\n"
-        " movi  v12.2d,  #0         \t\n"
-        " movi  v13.2d,  #0         \t\n"
-        " movi  v14.2d,  #0         \t\n"
-        " movi  v15.2d,  #0         \t\n"
+#ifdef MK_PRELOAD_A
+        // preload A
+        " ldp    q24, q25, [%[A]], #32        \t\n"
+#endif
+        " dup    v0.2d,  xzr       \t\n"
+        " dup    v1.2d,  xzr       \t\n"
+        " dup    v2.2d,  xzr       \t\n"
+        " dup    v3.2d,  xzr       \t\n"
+#ifdef MK_PRELOAD_B
+        // preload B
+        " ldp    q16, q17, [%[B]]        \t\n"
+        " ldp    q18,  q19, [%[B], #32]  \t\n"
+        " add     %[B], %[B], #64        \t\n"
+#endif
+        " dup    v4.2d,  xzr       \t\n"
+        " dup    v5.2d,  xzr       \t\n"
+        " dup    v6.2d,  xzr       \t\n"
+        " dup    v7.2d,  xzr       \t\n"
+        " dup    v8.2d,  xzr       \t\n"
+        " dup    v9.2d,  xzr       \t\n"
+        " dup   v10.2d,  xzr       \t\n"
+        " dup   v11.2d,  xzr       \t\n"
+        " dup   v12.2d,  xzr       \t\n"
+        " dup   v13.2d,  xzr       \t\n"
+        " dup   v14.2d,  xzr       \t\n"
+        " dup   v15.2d,  xzr       \t\n"
+
         : [A] "+r"(_A), [B] "+r"(_B),
           [v0] "=w"(v0), [v1] "=w"(v1), [v2] "=w"(v2), [v3] "=w"(v3), [v4] "=w"(v4), [v5] "=w"(v5), [v6] "=w"(v6), [v7] "=w"(v7), [v8] "=w"(v8), [v9] "=w"(v9),
           [v10] "=w"(v10), [v11] "=w"(v11), [v12] "=w"(v12), [v13] "=w"(v13), [v14] "=w"(v14), [v15] "=w"(v15), [v16] "=w"(v16), [v17] "=w"(v17), [v18] "=w"(v18), [v19] "=w"(v19),
           [v24] "=w"(v24), [v25] "=w"(v25));
 
-    uint64_t iter = kk >> 1;
 #pragma unroll(2)
-    for (uint64_t i = 0; i < iter; ++i)
+    for (uint64_t i = 0; i < kk >> 1; ++i)
     {
-        __builtin_prefetch(_A + (MR * 2) * 5, READ, LOCALITY_NONE);
-        __builtin_prefetch(_B + (NR * 2) * 5, READ, LOCALITY_HIGH);
-        __builtin_prefetch(_B + (NR * 2) * 5 + 8, READ, LOCALITY_HIGH);
+        __builtin_prefetch(_A + MK_PREFETCH_A_DISTANCE, READ, LOCALITY_NONE);
+#pragma unroll(MK_PREFETCH_B_DEPTH)
+        for (uint8_t i = 0; i < MK_PREFETCH_B_DEPTH; ++i)
+        {
+            __builtin_prefetch(_B + MK_PREFETCH_B_DISTANCE + 8 * i, READ, LOCALITY_HIGH);
+        }
 
         asm volatile(
-            " ldr    q20, [%[B]] \t\n"
-            " ldr    q21, [%[B], #16] \t\n"
-            " ldr    q22, [%[B], #32] \t\n"
-            " ldr    q23, [%[B], #48] \t\n"
-            " add    %[B], %[B], #64  \t\n"
+            " ldp    q20, q21, [%[B]]        \t\n"
+            " ldp    q22, q23, [%[B], #32]   \t\n"
             " fmla   v0.2d, v16.2d, v24.d[0] \t\n"
             " fmla   v1.2d, v17.2d, v24.d[0] \t\n"
             " fmla   v2.2d, v18.2d, v24.d[0] \t\n"
             " fmla   v3.2d, v19.2d, v24.d[0] \t\n"
 
-            " ldr    q26, [%[A]] \t\n"
+            " ldr    q26, [%[A]]             \t\n"
             " fmla   v4.2d, v16.2d, v24.d[1] \t\n"
             " fmla   v5.2d, v17.2d, v24.d[1] \t\n"
             " fmla   v6.2d, v18.2d, v24.d[1] \t\n"
             " fmla   v7.2d, v19.2d, v24.d[1] \t\n"
 
-            " ldr    q27, [%[A], #16] \t\n"
+            " ldr    q27, [%[A], #16]        \t\n"
             " fmla   v8.2d, v16.2d, v25.d[0] \t\n"
             " fmla   v9.2d, v17.2d, v25.d[0] \t\n"
             " fmla  v10.2d, v18.2d, v25.d[0] \t\n"
@@ -209,24 +227,22 @@ void micro_kernel(
             " fmla  v14.2d, v18.2d, v25.d[1] \t\n"
             " fmla  v15.2d, v19.2d, v25.d[1] \t\n"
 
-            " ldr    q16, [%[B]] \t\n"
-            " ldr    q17, [%[B], #16] \t\n"
-            " ldr    q18, [%[B], #32] \t\n"
-            " ldr    q19, [%[B], #48] \t\n"
-            " add    %[B], %[B], #64  \t\n"
+            " ldp    q16, q17, [%[B], #64]   \t\n"
+            " ldp    q18, q19, [%[B], #96]   \t\n"
+            " add   %[B], %[B], #128         \t\n"
             " fmla   v0.2d, v20.2d, v26.d[0] \t\n"
             " fmla   v1.2d, v21.2d, v26.d[0] \t\n"
             " fmla   v2.2d, v22.2d, v26.d[0] \t\n"
             " fmla   v3.2d, v23.2d, v26.d[0] \t\n"
 
-            " ldr    q24, [%[A], #32] \t\n"
+            " ldr    q24, [%[A], #32]        \t\n"
             " fmla   v4.2d, v20.2d, v26.d[1] \t\n"
             " fmla   v5.2d, v21.2d, v26.d[1] \t\n"
             " fmla   v6.2d, v22.2d, v26.d[1] \t\n"
             " fmla   v7.2d, v23.2d, v26.d[1] \t\n"
 
-            " ldr    q25, [%[A], #48] \t\n"
-            " add    %[A], %[A], #64  \t\n"
+            " ldr    q25, [%[A], #48]        \t\n"
+            " add   %[A], %[A], #64          \t\n"
             " fmla   v8.2d, v20.2d, v27.d[0] \t\n"
             " fmla   v9.2d, v21.2d, v27.d[0] \t\n"
             " fmla  v10.2d, v22.2d, v27.d[0] \t\n"
@@ -246,58 +262,50 @@ void micro_kernel(
     //    __builtin_prefetch(B_next + 0x00, 0, 3);
 
     asm volatile(
-        " ldr      q16, [%[C0]]          \t\n"
-        " ldr      q17, [%[C0], #16]     \t\n"
-        " ldr      q18, [%[C0], #32]     \t\n"
-        " ldr      q19, [%[C0], #48]     \t\n"
-        " ldr      q20, [%[C1]]          \t\n"
-        " ldr      q21, [%[C1], #16]     \t\n"
-        " ldr      q22, [%[C1], #32]     \t\n"
-        " ldr      q23, [%[C1], #48]     \t\n"
-        " ldr      q24, [%[C2]]          \t\n"
-        " ldr      q25, [%[C2], #16]     \t\n"
-        " ldr      q26, [%[C2], #32]     \t\n"
-        " ldr      q27, [%[C2], #48]     \t\n"
-        " ldr      q28, [%[C3]]          \t\n"
-        " ldr      q29, [%[C3], #16]     \t\n"
-        " ldr      q30, [%[C3], #32]     \t\n"
-        " ldr      q31, [%[C3], #48]     \t\n"
+        " ldp      q16, q17, [%[C0]]       \t\n"
+        " ldp      q18, q19, [%[C0], #32]  \t\n"
+        " ldp      q20, q21, [%[C1]]       \t\n"
+        " ldp      q22, q23, [%[C1], #32]  \t\n"
+        " ldp      q24, q25, [%[C2]]       \t\n"
+        " ldp      q26, q27, [%[C2], #32]  \t\n"
+        " ldp      q28, q29, [%[C3]]       \t\n"
+        " ldp      q30, q31, [%[C3], #32]  \t\n"
 
         " fadd  v16.2d, v16.2d, v0.2d    \t\n"
         " fadd  v17.2d, v17.2d, v1.2d    \t\n"
         " fadd  v18.2d, v18.2d, v2.2d    \t\n"
         " fadd  v19.2d, v19.2d, v3.2d    \t\n"
-        " str   q16, [%[C0]]             \t\n"
-        " str   q17, [%[C0], #16]        \t\n"
-        " str   q18, [%[C0], #32]        \t\n"
-        " str   q19, [%[C0], #48]        \t\n"
+        " str   q16, [%[C0]] \t\n"
+        " str   q17, [%[C0], #16] \t\n"
+        " str   q18, [%[C0], #32] \t\n"
+        " str   q19, [%[C0], #48] \t\n"
 
         " fadd  v20.2d, v20.2d, v4.2d    \t\n"
         " fadd  v21.2d, v21.2d, v5.2d    \t\n"
         " fadd  v22.2d, v22.2d, v6.2d    \t\n"
         " fadd  v23.2d, v23.2d, v7.2d    \t\n"
-        " str   q20, [%[C1]]             \t\n"
-        " str   q21, [%[C1], #16]        \t\n"
-        " str   q22, [%[C1], #32]        \t\n"
-        " str   q23, [%[C1], #48]        \t\n"
+        " str   q20, [%[C1]] \t\n"
+        " str   q21, [%[C1], #16] \t\n"
+        " str   q22, [%[C1], #32] \t\n"
+        " str   q23, [%[C1], #48] \t\n"
 
         " fadd  v24.2d, v24.2d,  v8.2d   \t\n"
         " fadd  v25.2d, v25.2d,  v9.2d   \t\n"
         " fadd  v26.2d, v26.2d, v10.2d   \t\n"
         " fadd  v27.2d, v27.2d, v11.2d   \t\n"
-        " str   q24, [%[C2]]             \t\n"
-        " str   q25, [%[C2], #16]        \t\n"
-        " str   q26, [%[C2], #32]        \t\n"
-        " str   q27, [%[C2], #48]        \t\n"
+        " str   q24, [%[C2]] \t\n"
+        " str   q25, [%[C2], #16] \t\n"
+        " str   q26, [%[C2], #32] \t\n"
+        " str   q27, [%[C2], #48] \t\n"
 
         " fadd  v28.2d, v28.2d, v12.2d   \t\n"
         " fadd  v29.2d, v29.2d, v13.2d   \t\n"
         " fadd  v30.2d, v30.2d, v14.2d   \t\n"
         " fadd  v31.2d, v31.2d, v15.2d   \t\n"
-        " str   q28, [%[C3]]             \t\n"
-        " str   q29, [%[C3], #16]        \t\n"
-        " str   q30, [%[C3], #32]        \t\n"
-        " str   q31, [%[C3], #48]        \t\n"
+        " str   q28, [%[C3]] \t\n"
+        " str   q29, [%[C3], #16] \t\n"
+        " str   q30, [%[C3], #32] \t\n"
+        " str   q31, [%[C3], #48] \t\n"
 
         : [v0] "+w"(v0), [v1] "+w"(v1), [v2] "+w"(v2), [v3] "+w"(v3), [v4] "+w"(v4), [v5] "+w"(v5), [v6] "+w"(v6), [v7] "+w"(v7), [v8] "+w"(v8), [v9] "+w"(v9),
           [v10] "+w"(v10), [v11] "+w"(v11), [v12] "+w"(v12), [v13] "+w"(v13), [v14] "+w"(v14), [v15] "+w"(v15), [v16] "+w"(v16), [v17] "+w"(v17), [v18] "+w"(v18), [v19] "+w"(v19),
@@ -318,6 +326,7 @@ void micro_dxpy(
 {
     for (uint64_t i = 0; i < m; ++i)
     {
+#pragma unroll(2)
         for (uint64_t j = 0; j < n; ++j)
         {
             C[j] += _C[j];
@@ -336,30 +345,32 @@ void inner_kernel(
     double *restrict C,
     const uint64_t ldc)
 {
-    const uint64_t mmc = (mm + MR - 1) / MR;
-    uint64_t mmr = mm % MR;
-    if (LIKELY(mmr == 0))
+    const uint64_t mmc = ROUND_UP(mm, MR);
+    uint64_t mmr = MR;
+    const uint64_t mmr_ = mm % MR;
+    if (mmr_ != 0)
     {
-        mmr = MR;
+        mmr = mmr_;
     }
 
-    const uint64_t nnc = (nn + NR - 1) / NR;
-    uint64_t nnr = nn % NR;
-    if (LIKELY(nnr == 0))
+    const uint64_t nnc = ROUND_UP(nn, NR);
+    uint64_t nnr = NR;
+    const uint64_t nnr_ = nn % NR;
+    if (nnr_ != 0)
     {
-        nnr = NR;
+        nnr = nnr_;
     }
 
     const double *A;
 
     for (uint64_t nni = 0; nni < nnc; ++nni)
     {
-        const uint64_t nnn = nni != nnc - 1 ? NR : nnr;
+        const uint64_t nnn = LIKELY(nni != nnc - 1) ? NR : nnr;
 
         A = _A;
         for (uint64_t mmi = 0; mmi < mmc; ++mmi)
         {
-            const uint64_t mmm = mmi != mmc - 1 ? MR : mmr;
+            const uint64_t mmm = LIKELY(mmi != mmc - 1) ? MR : mmr;
 
             if (LIKELY(mmm == MR && nnn == NR))
             {
@@ -386,18 +397,20 @@ void pack_arc(
     const uint64_t lda,
     double *restrict B)
 {
-    const register uint64_t mmc = (mm + MR - 1) / MR;
-    register uint64_t mmr = mm % MR;
-    if (LIKELY(mmr == 0))
+    const uint64_t mmc = ROUND_UP(mm, MR);
+    uint64_t mmr = MR;
+    const uint64_t mmr_ = mm % MR;
+    if (mmr_ != 0)
     {
-        mmr = MR;
+        mmr = mmr_;
     }
 
-    const register uint64_t kkc = (kk + CACHE_ELEM - 1) / CACHE_ELEM;
-    register uint64_t kkr = kk % CACHE_ELEM;
-    if (LIKELY(kkr == 0))
+    const uint64_t kkc = ROUND_UP(kk, CACHE_ELEM);
+    uint64_t kkr = CACHE_ELEM;
+    const uint64_t kkr_ = kk % CACHE_ELEM;
+    if (kkr_ != 0)
     {
-        kkr = CACHE_ELEM;
+        kkr = kkr_;
     }
 
     const double *A_acc;
@@ -406,25 +419,16 @@ void pack_arc(
 
     for (uint64_t mmi = 0; LIKELY(mmi < mmc); ++mmi)
     {
-        const register bool mmt = LIKELY(mmi != mmc - 1);
-        const register uint64_t mmm = mmt ? MR : mmr;
+        const register uint64_t mmm = LIKELY(mmi != mmc - 1) ? MR : mmr;
 
-        __builtin_prefetch(A + lda * 0 + CACHE_ELEM * 0, READ, LOCALITY_NONE);
-        __builtin_prefetch(A + lda * 1 + CACHE_ELEM * 0, READ, LOCALITY_NONE);
-        __builtin_prefetch(A + lda * 2 + CACHE_ELEM * 0, READ, LOCALITY_NONE);
-        __builtin_prefetch(A + lda * 3 + CACHE_ELEM * 0, READ, LOCALITY_NONE);
-        __builtin_prefetch(A + lda * 0 + CACHE_ELEM * 1, READ, LOCALITY_NONE);
-        __builtin_prefetch(A + lda * 1 + CACHE_ELEM * 1, READ, LOCALITY_NONE);
-        __builtin_prefetch(A + lda * 2 + CACHE_ELEM * 1, READ, LOCALITY_NONE);
-        __builtin_prefetch(A + lda * 3 + CACHE_ELEM * 1, READ, LOCALITY_NONE);
-        __builtin_prefetch(A + lda * 0 + CACHE_ELEM * 2, READ, LOCALITY_NONE);
-        __builtin_prefetch(A + lda * 1 + CACHE_ELEM * 2, READ, LOCALITY_NONE);
-        __builtin_prefetch(A + lda * 2 + CACHE_ELEM * 2, READ, LOCALITY_NONE);
-        __builtin_prefetch(A + lda * 3 + CACHE_ELEM * 2, READ, LOCALITY_NONE);
-        __builtin_prefetch(A + lda * 0 + CACHE_ELEM * 3, READ, LOCALITY_NONE);
-        __builtin_prefetch(A + lda * 1 + CACHE_ELEM * 3, READ, LOCALITY_NONE);
-        __builtin_prefetch(A + lda * 2 + CACHE_ELEM * 3, READ, LOCALITY_NONE);
-        __builtin_prefetch(A + lda * 3 + CACHE_ELEM * 3, READ, LOCALITY_NONE);
+#pragma unroll(ARC_PREFETCH_DEPTH)
+        for (uint8_t i = 0; i < ARC_PREFETCH_DEPTH; ++i)
+        {
+            __builtin_prefetch(A + lda * 0 + CACHE_ELEM * i, READ, ARC_PREFETCH_LOCALITY);
+            __builtin_prefetch(A + lda * 1 + CACHE_ELEM * i, READ, ARC_PREFETCH_LOCALITY);
+            __builtin_prefetch(A + lda * 2 + CACHE_ELEM * i, READ, ARC_PREFETCH_LOCALITY);
+            __builtin_prefetch(A + lda * 3 + CACHE_ELEM * i, READ, ARC_PREFETCH_LOCALITY);
+        }
 
         A_acc = A;
         B_acc = B;
@@ -441,22 +445,14 @@ void pack_arc(
 
                 inner_acc = B_acc;
                 asm volatile(
-                    " ld1   {v0.2d},         [%[A0]], #16  \t\n"
-                    " ld1   {v4.2d},         [%[A0]], #16  \t\n"
-                    " ld1   {v8.2d},         [%[A0]], #16  \t\n"
-                    " ld1   {v12.2d},        [%[A0]]       \t\n"
-                    " ld1   {v1.2d},         [%[A1]], #16  \t\n"
-                    " ld1   {v5.2d},         [%[A1]], #16  \t\n"
-                    " ld1   {v9.2d},         [%[A1]], #16  \t\n"
-                    " ld1   {v13.2d},        [%[A1]]       \t\n"
-                    " ld1   {v2.2d},         [%[A2]], #16  \t\n"
-                    " ld1   {v6.2d},         [%[A2]], #16  \t\n"
-                    " ld1   {v10.2d},        [%[A2]], #16  \t\n"
-                    " ld1   {v14.2d},        [%[A2]]       \t\n"
-                    " ld1   {v3.2d},         [%[A3]], #16  \t\n"
-                    " ld1   {v7.2d},         [%[A3]], #16  \t\n"
-                    " ld1   {v11.2d},        [%[A3]], #16  \t\n"
-                    " ld1   {v15.2d},        [%[A3]]       \t\n"
+                    " ldp    q0,  q4, [%[A0]]       \t\n"
+                    " ldp    q8, q12, [%[A0], #32]  \t\n"
+                    " ldp    q1,  q5, [%[A1]]       \t\n"
+                    " ldp    q9, q13, [%[A1], #32]  \t\n"
+                    " ldp    q2,  q6, [%[A2]]       \t\n"
+                    " ldp   q10, q14, [%[A2], #32]  \t\n"
+                    " ldp    q3,  q7, [%[A3]]       \t\n"
+                    " ldp   q11, q15, [%[A3], #32]  \t\n"
 
                     " st4   {v0.2d-v3.2d},   [%[B]], #64  \t\n"
                     " st4   {v4.2d-v7.2d},   [%[B]], #64  \t\n"
@@ -496,7 +492,7 @@ void pack_brr(
     const uint64_t ldb,
     double *restrict _B)
 {
-    const uint64_t nnc = (nn + NR - 1) / NR;
+    const uint64_t nnc = ROUND_UP(nn, NR);
     for (uint64_t j = 0; j < kk; ++j)
     {
         const register double *Bm = B;
@@ -552,26 +548,41 @@ static void *middle_kernel(
     _A = numa_alloc_onnode(sizeof(double) * (MB + MR) * KB, nid);
     _B = numa_alloc_onnode(sizeof(double) * KB * (NB + NR), nid);
 
-    const uint64_t mc = (m + MB - 1) / MB;
-    const uint64_t mr = m % MB;
-    const uint64_t nc = (n + NB - 1) / NB;
-    const uint64_t nr = n % NB;
-    const uint64_t kc = (k + KB - 1) / KB;
-    const uint64_t kr = k % KB;
+    const uint64_t mc = ROUND_UP(m, MB);
+    uint64_t mr = MB;
+    const uint64_t mr_ = m % MB;
+    if (mr_ != 0)
+    {
+        mr = mr_;
+    }
+    const uint64_t nc = ROUND_UP(n, NB);
+    uint64_t nr = NB;
+    const uint64_t nr_ = n % NB;
+    if (nr_ != 0)
+    {
+        nr = nr_;
+    }
+    const uint64_t kc = ROUND_UP(k, KB);
+    uint64_t kr = KB;
+    const uint64_t kr_ = k % KB;
+    if (kr_ != 0)
+    {
+        kr = kr_;
+    }
 
     for (uint64_t ni = 0; ni < nc; ++ni)
     {
-        const uint64_t nn = (ni != nc - 1 || nr == 0) ? NB : nr;
+        const uint64_t nn = ni != nc - 1 ? NB : nr;
 
         for (uint64_t ki = 0; ki < kc; ++ki)
         {
-            const uint64_t kk = (ki != kc - 1 || kr == 0) ? KB : kr;
+            const register uint64_t kk = ki != kc - 1 ? KB : kr;
 
             pack_brr(kk, nn, B + ki * KB * ldb + ni * NB, ldb, _B);
 
             for (uint64_t mi = 0; mi < mc; ++mi)
             {
-                const uint64_t mm = (mi != mc - 1 || mr == 0) ? MB : mr;
+                const register uint64_t mm = mi != mc - 1 ? MB : mr;
 
                 pack_arc(mm, kk, A + mi * MB * lda + ki * KB, lda, _A);
 
@@ -603,11 +614,11 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
     assert(alpha == 1.0);
     assert(beta == 1.0);
 
-    const uint64_t total_m_jobs = (m + MR - 1) / MR;
+    const uint64_t total_m_jobs = ROUND_UP(m, MR);
     const uint64_t min_each_m_jobs = total_m_jobs / CM;
     const uint64_t rest_m_jobs = total_m_jobs % CM;
 
-    const uint64_t total_n_jobs = (n + NR - 1) / NR;
+    const uint64_t total_n_jobs = ROUND_UP(n, NR);
     const uint64_t min_each_n_jobs = total_n_jobs / CN;
     const uint64_t rest_n_jobs = total_n_jobs % CN;
 
@@ -623,13 +634,13 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
         const uint64_t m_pid = pid % CM;
         const uint64_t n_pid = pid / CM;
 
-        const uint64_t my_m_idx_start = (m_pid)*min_each_m_jobs + MIN(m_pid, rest_m_jobs);
+        const uint64_t my_m_idx_start = m_pid * min_each_m_jobs + MIN(m_pid, rest_m_jobs);
         const uint64_t my_m_idx_end = (m_pid + 1) * min_each_m_jobs + MIN(m_pid + 1, rest_m_jobs);
         const uint64_t my_m_start = MIN(my_m_idx_start * MR, m);
         const uint64_t my_m_end = MIN(my_m_idx_end * MR, m);
         const uint64_t my_m_size = my_m_end - my_m_start;
 
-        const uint64_t my_n_idx_start = (n_pid)*min_each_n_jobs + MIN(n_pid, rest_n_jobs);
+        const uint64_t my_n_idx_start = n_pid * min_each_n_jobs + MIN(n_pid, rest_n_jobs);
         const uint64_t my_n_idx_end = (n_pid + 1) * min_each_n_jobs + MIN(n_pid + 1, rest_n_jobs);
         const uint64_t my_n_start = MIN(my_n_idx_start * NR, n);
         const uint64_t my_n_end = MIN(my_n_idx_end * NR, n);
@@ -653,15 +664,15 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
         CPU_ZERO(&mask);
         CPU_SET(pid, &mask);
 
-        HANDLE_ERROR(pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &mask));
-        HANDLE_ERROR(pthread_create(&tinfo[pid].thread_id, &attr, &middle_kernel, &tinfo[pid]));
+        PTHREAD_CALL(pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &mask));
+        PTHREAD_CALL(pthread_create(&tinfo[pid].thread_id, &attr, &middle_kernel, &tinfo[pid]));
     }
 
-    HANDLE_ERROR(pthread_attr_destroy(&attr));
+    PTHREAD_CALL(pthread_attr_destroy(&attr));
 
     for (uint64_t pid = 0; pid < TOTAL_CORE; ++pid)
     {
         void *res;
-        HANDLE_ERROR(pthread_join(tinfo[pid].thread_id, &res));
+        PTHREAD_CALL(pthread_join(tinfo[pid].thread_id, &res));
     }
 }

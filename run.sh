@@ -9,7 +9,7 @@ export OMP_NUM_THREADS=64
 OUT_PATH=./out
 
 #for kernel in $@; do
-for kernel in kernel.latest; do
+for kernel in kernel07; do
   path=${OUT_PATH}/${kernel}.out
   make -s ${path}
 

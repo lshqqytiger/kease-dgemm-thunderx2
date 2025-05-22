@@ -13,7 +13,7 @@
 #ifdef VERIFY
 #endif
 
-//#define NO_PRINT
+// #define NO_PRINT
 
 void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
                 CBLAS_TRANSPOSE TransB, int64_t m, int64_t n, int64_t k,
@@ -22,24 +22,27 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
 void set_data(double *matrix, uint64_t size, uint64_t seed, double min_value,
               double max_value);
 
-int main(int argc, char **argv) {
-    if (argc != 11) {
+int main(int argc, char **argv)
+{
+    if (argc != 11)
+    {
         fprintf(stderr,
                 "Usage : %s NumThreads Layout(Row/Col) TransA(T/N) TransB(T/N) M N K"
-                " alpha beta iter\n", argv[0]);
+                " alpha beta iter\n",
+                argv[0]);
         return 1;
     }
 
-    const uint64_t        nt     = strtol(argv[1], NULL, 10);
-    const CBLAS_LAYOUT    layout = (argv[2][0] == 'R') ? CblasRowMajor : CblasColMajor;
-    const CBLAS_TRANSPOSE TransA = (argv[3][0] == 'T') ? CblasTrans    : CblasNoTrans ;
-    const CBLAS_TRANSPOSE TransB = (argv[4][0] == 'T') ? CblasTrans    : CblasNoTrans ;
-    const uint64_t        m      = strtol(argv[5], NULL, 10);
-    const uint64_t        n      = strtol(argv[6], NULL, 10);
-    const uint64_t        k      = strtol(argv[7], NULL, 10);
-    const double          alpha  = strtod(argv[8], NULL);
-    const double          beta   = strtod(argv[9], NULL);
-    const uint64_t        iter   = strtol(argv[10], NULL, 10);
+    const uint64_t nt = strtol(argv[1], NULL, 10);
+    const CBLAS_LAYOUT layout = (argv[2][0] == 'R') ? CblasRowMajor : CblasColMajor;
+    const CBLAS_TRANSPOSE TransA = (argv[3][0] == 'T') ? CblasTrans : CblasNoTrans;
+    const CBLAS_TRANSPOSE TransB = (argv[4][0] == 'T') ? CblasTrans : CblasNoTrans;
+    const uint64_t m = strtol(argv[5], NULL, 10);
+    const uint64_t n = strtol(argv[6], NULL, 10);
+    const uint64_t k = strtol(argv[7], NULL, 10);
+    const double alpha = strtod(argv[8], NULL);
+    const double beta = strtod(argv[9], NULL);
+    const uint64_t iter = strtol(argv[10], NULL, 10);
 
     const uint64_t lda = (TransA == CblasTrans) != (layout == CblasRowMajor) ? k : m;
     const uint64_t ldb = (TransB == CblasTrans) != (layout == CblasRowMajor) ? n : k;
@@ -85,7 +88,8 @@ int main(int argc, char **argv) {
 
     double min_duration = 1e10;
     double max_gflops = 0;
-    for (uint64_t i = 0; i < iter; ++i) {
+    for (uint64_t i = 0; i < iter; ++i)
+    {
         const double start_time = omp_get_wtime();
         call_dgemm(layout, TransA, TransB, m, n, k, alpha, A, lda, B, ldb, beta,
                    C, ldc);
@@ -93,22 +97,25 @@ int main(int argc, char **argv) {
         const double duration = end_time - start_time;
         const double gflops = 2.0e-9 * m * n * k / duration;
 
-		if (min_duration > duration) {
-        	min_duration = duration;
-			max_gflops = gflops;
-		}
+        if (min_duration > duration)
+        {
+            min_duration = duration;
+            max_gflops = gflops;
+        }
 
 #ifndef NO_PRINT
         printf("%4lu)%17.3lf%18.3lf\n", i + 1, duration, gflops);
 #endif
 
 #ifdef VERIFY
-        if (i == 0) {
+        if (i == 0)
+        {
             cblas_dgemm(layout, TransA, TransB, m, n, k, alpha, A, lda, B, ldb,
                         beta, D, ldc);
             cblas_daxpy(m * n, -1.0, C, 1, D, 1);
             double difference = cblas_dnrm2(m * n, D, 1);
-            if (difference > 0.0001) {
+            if (difference > 0.0001)
+            {
                 printf("WRONG RESULT\n");
                 printf("---------------------------------------\n");
                 return 1;
@@ -118,7 +125,8 @@ int main(int argc, char **argv) {
     }
 
 #ifndef NO_PRINT
-    if (iter > 1) {
+    if (iter > 1)
+    {
         printf("---------------------------------------\n");
         printf("best)%17.3lf%18.3lf\n", min_duration, max_gflops);
     }
@@ -138,7 +146,8 @@ int main(int argc, char **argv) {
 }
 
 void set_data(double *matrix, uint64_t size, uint64_t seed, double min_value,
-              double max_value) {
+              double max_value)
+{
 #pragma omp parallel
     {
         uint64_t tid = omp_get_thread_num();
@@ -148,10 +157,10 @@ void set_data(double *matrix, uint64_t size, uint64_t seed, double min_value,
         for (uint64_t i = 0; i < 50 + tid; ++i)
             value = value * mul + add;
 #pragma omp for
-        for (uint64_t i = 0; i < size; ++i) {
+        for (uint64_t i = 0; i < size; ++i)
+        {
             value = value * mul + add;
-            matrix[i] = (double)value / (double)(uint64_t)(-1) * (max_value - min_value)
-                        + min_value;
+            matrix[i] = (double)value / (double)(uint64_t)(-1) * (max_value - min_value) + min_value;
         }
     }
 }
