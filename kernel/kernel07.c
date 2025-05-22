@@ -332,36 +332,34 @@ void inner_kernel(
     const uint64_t nn,
     const uint64_t kk,
     const double *restrict _A,
-    const double *restrict _B,
+    const double *restrict B,
     double *restrict C,
     const uint64_t ldc)
 {
-    const register uint64_t mmc = (mm + MR - 1) / MR;
-    register uint64_t mmr = mm % MR;
+    const uint64_t mmc = (mm + MR - 1) / MR;
+    uint64_t mmr = mm % MR;
     if (LIKELY(mmr == 0))
     {
         mmr = MR;
     }
 
-    const register uint64_t nnc = (nn + NR - 1) / NR;
-    register uint64_t nnr = nn % NR;
+    const uint64_t nnc = (nn + NR - 1) / NR;
+    uint64_t nnr = nn % NR;
     if (LIKELY(nnr == 0))
     {
         nnr = NR;
     }
 
-    const register double *A = _A;
-    const register double *B = _B;
+    const double *A;
 
     for (uint64_t nni = 0; nni < nnc; ++nni)
     {
-        const register bool nnt = LIKELY(nni != nnc - 1);
-        const register uint64_t nnn = nnt ? NR : nnr;
+        const uint64_t nnn = nni != nnc - 1 ? NR : nnr;
 
+        A = _A;
         for (uint64_t mmi = 0; mmi < mmc; ++mmi)
         {
-            const register bool mmt = LIKELY(mmi != mmc - 1);
-            const register uint64_t mmm = mmt ? MR : mmr;
+            const uint64_t mmm = mmi != mmc - 1 ? MR : mmr;
 
             if (LIKELY(mmm == MR && nnn == NR))
             {
@@ -371,16 +369,13 @@ void inner_kernel(
             {
                 double _C[MR * NR] __attribute__((aligned(CACHE_LINE))) = {};
                 micro_kernel(kk, A, B, _C, NR);
-                micro_dxpy(mmr, nnr, C + mmi * MR * ldc + nni * NR, ldc, _C);
+                micro_dxpy(mmm, nnn, C + mmi * MR * ldc + nni * NR, ldc, _C);
             }
 
-            A = mmt ? A + MR * kk : _A;
+            A += MR * kk;
         }
 
-        if (nnt)
-        {
-            B += NR * kk;
-        }
+        B += NR * kk;
     }
 }
 
@@ -389,7 +384,7 @@ void pack_arc(
     const uint64_t kk,
     const double *restrict A,
     const uint64_t lda,
-    double *restrict _A)
+    double *restrict B)
 {
     const register uint64_t mmc = (mm + MR - 1) / MR;
     register uint64_t mmr = mm % MR;
@@ -405,47 +400,46 @@ void pack_arc(
         kkr = CACHE_ELEM;
     }
 
-    const register double *A_now = A;
-    register double *_A_now = _A;
+    const double *A_acc;
+    double *B_acc;
+    double *inner_acc;
 
     for (uint64_t mmi = 0; LIKELY(mmi < mmc); ++mmi)
     {
         const register bool mmt = LIKELY(mmi != mmc - 1);
         const register uint64_t mmm = mmt ? MR : mmr;
 
-        __builtin_prefetch(A_now + lda * 0 + CACHE_ELEM * 0, READ, LOCALITY_NONE);
-        __builtin_prefetch(A_now + lda * 1 + CACHE_ELEM * 0, READ, LOCALITY_NONE);
-        __builtin_prefetch(A_now + lda * 2 + CACHE_ELEM * 0, READ, LOCALITY_NONE);
-        __builtin_prefetch(A_now + lda * 3 + CACHE_ELEM * 0, READ, LOCALITY_NONE);
-        __builtin_prefetch(A_now + lda * 0 + CACHE_ELEM * 1, READ, LOCALITY_NONE);
-        __builtin_prefetch(A_now + lda * 1 + CACHE_ELEM * 1, READ, LOCALITY_NONE);
-        __builtin_prefetch(A_now + lda * 2 + CACHE_ELEM * 1, READ, LOCALITY_NONE);
-        __builtin_prefetch(A_now + lda * 3 + CACHE_ELEM * 1, READ, LOCALITY_NONE);
-        __builtin_prefetch(A_now + lda * 0 + CACHE_ELEM * 2, READ, LOCALITY_NONE);
-        __builtin_prefetch(A_now + lda * 1 + CACHE_ELEM * 2, READ, LOCALITY_NONE);
-        __builtin_prefetch(A_now + lda * 2 + CACHE_ELEM * 2, READ, LOCALITY_NONE);
-        __builtin_prefetch(A_now + lda * 3 + CACHE_ELEM * 2, READ, LOCALITY_NONE);
-        __builtin_prefetch(A_now + lda * 0 + CACHE_ELEM * 3, READ, LOCALITY_NONE);
-        __builtin_prefetch(A_now + lda * 1 + CACHE_ELEM * 3, READ, LOCALITY_NONE);
-        __builtin_prefetch(A_now + lda * 2 + CACHE_ELEM * 3, READ, LOCALITY_NONE);
-        __builtin_prefetch(A_now + lda * 3 + CACHE_ELEM * 3, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 0 + CACHE_ELEM * 0, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 1 + CACHE_ELEM * 0, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 2 + CACHE_ELEM * 0, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 3 + CACHE_ELEM * 0, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 0 + CACHE_ELEM * 1, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 1 + CACHE_ELEM * 1, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 2 + CACHE_ELEM * 1, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 3 + CACHE_ELEM * 1, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 0 + CACHE_ELEM * 2, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 1 + CACHE_ELEM * 2, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 2 + CACHE_ELEM * 2, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 3 + CACHE_ELEM * 2, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 0 + CACHE_ELEM * 3, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 1 + CACHE_ELEM * 3, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 2 + CACHE_ELEM * 3, READ, LOCALITY_NONE);
+        __builtin_prefetch(A + lda * 3 + CACHE_ELEM * 3, READ, LOCALITY_NONE);
 
-        if (mmm == MR)
-        {
-            _A_now = _A + mmi * MR * kk;
-        }
-
+        A_acc = A;
+        B_acc = B;
         for (uint64_t kki = 0; UNLIKELY(kki < kkc); ++kki)
         {
-            const register uint64_t kkk = LIKELY(kki != kkc - 1) ? CACHE_ELEM : kkr;
+            const uint64_t kkk = LIKELY(kki != kkc - 1) ? CACHE_ELEM : kkr;
 
             if (LIKELY(mmm == MR && kkk == CACHE_ELEM))
             {
-                const register double *A0 = A_now + lda * 0;
-                const register double *A1 = A_now + lda * 1;
-                const register double *A2 = A_now + lda * 2;
-                const register double *A3 = A_now + lda * 3;
+                const double *A0 = A_acc + lda * 0;
+                const double *A1 = A_acc + lda * 1;
+                const double *A2 = A_acc + lda * 2;
+                const double *A3 = A_acc + lda * 3;
 
+                inner_acc = B_acc;
                 asm volatile(
                     " ld1   {v0.2d},         [%[A0]], #16  \t\n"
                     " ld1   {v4.2d},         [%[A0]], #16  \t\n"
@@ -464,16 +458,16 @@ void pack_arc(
                     " ld1   {v11.2d},        [%[A3]], #16  \t\n"
                     " ld1   {v15.2d},        [%[A3]]       \t\n"
 
-                    " st4   {v0.2d-v3.2d},   [%[_A]], #64  \t\n"
-                    " st4   {v4.2d-v7.2d},   [%[_A]], #64  \t\n"
-                    " st4   {v8.2d-v11.2d},  [%[_A]], #64  \t\n"
-                    " st4   {v12.2d-v15.2d}, [%[_A]], #64  \t\n"
+                    " st4   {v0.2d-v3.2d},   [%[B]], #64  \t\n"
+                    " st4   {v4.2d-v7.2d},   [%[B]], #64  \t\n"
+                    " st4   {v8.2d-v11.2d},  [%[B]], #64  \t\n"
+                    " st4   {v12.2d-v15.2d}, [%[B]]  \t\n"
 
                     : [A0] "+r"(A0),
                       [A1] "+r"(A1),
                       [A2] "+r"(A2),
                       [A3] "+r"(A3),
-                      [_A] "+r"(_A_now));
+                      [B] "+r"(inner_acc));
             }
             else
             {
@@ -481,18 +475,17 @@ void pack_arc(
                 {
                     for (uint64_t kkki = 0; kkki < kkk; ++kkki)
                     {
-                        _A_now[mmmi + kkki * MR] = A_now[mmmi * lda + kkki];
+                        B_acc[mmmi + kkki * MR] = A_acc[mmmi * lda + kkki];
                     }
                 }
             }
 
-            A_now += CACHE_ELEM;
+            A_acc += CACHE_ELEM;
+            B_acc += MR * CACHE_ELEM;
         }
 
-        if (mmt)
-        {
-            A_now += MR * lda;
-        }
+        A += MR * lda;
+        B += MR * kk;
     }
 }
 
