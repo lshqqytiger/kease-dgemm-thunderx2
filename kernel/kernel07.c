@@ -56,13 +56,21 @@
 #define CACHE_LINE 64
 #define CACHE_ELEM (CACHE_LINE / 8)
 
+#ifdef OC
+#define TOTAL_CORE 1
+#define NUMA_NODE 1
+#else
 #define TOTAL_CORE 64
-
 #define NUMA_NODE 2
+#endif
 
 // tunable parameters
+#ifdef OC
+#define CM 1
+#else
 #ifndef CM
 #define CM 8
+#endif
 #endif
 
 #define CN (TOTAL_CORE / CM)
@@ -163,30 +171,30 @@ void micro_kernel(
     asm volatile(
 #ifdef MK_PRELOAD_A
         // preload A
-        " ldp    q24, q25, [%[A]], #32        \t\n"
+        " ldp    q24, q25, [%[A]], #32  \t\n"
 #endif
-        " dup    v0.2d,  xzr       \t\n"
-        " dup    v1.2d,  xzr       \t\n"
-        " dup    v2.2d,  xzr       \t\n"
-        " dup    v3.2d,  xzr       \t\n"
+        " movi   v0.2d, #0  \t\n"
+        " movi   v1.2d, #0  \t\n"
+        " movi   v2.2d, #0  \t\n"
+        " movi   v3.2d, #0  \t\n"
 #ifdef MK_PRELOAD_B
         // preload B
         " ldp    q16, q17, [%[B]]        \t\n"
         " ldp    q18,  q19, [%[B], #32]  \t\n"
         " add     %[B], %[B], #64        \t\n"
 #endif
-        " dup    v4.2d,  xzr       \t\n"
-        " dup    v5.2d,  xzr       \t\n"
-        " dup    v6.2d,  xzr       \t\n"
-        " dup    v7.2d,  xzr       \t\n"
-        " dup    v8.2d,  xzr       \t\n"
-        " dup    v9.2d,  xzr       \t\n"
-        " dup   v10.2d,  xzr       \t\n"
-        " dup   v11.2d,  xzr       \t\n"
-        " dup   v12.2d,  xzr       \t\n"
-        " dup   v13.2d,  xzr       \t\n"
-        " dup   v14.2d,  xzr       \t\n"
-        " dup   v15.2d,  xzr       \t\n"
+        " movi   v4.2d, #0  \t\n"
+        " movi   v5.2d, #0  \t\n"
+        " movi   v6.2d, #0  \t\n"
+        " movi   v7.2d, #0  \t\n"
+        " movi   v8.2d, #0  \t\n"
+        " movi   v9.2d, #0  \t\n"
+        " movi  v10.2d, #0  \t\n"
+        " movi  v11.2d, #0  \t\n"
+        " movi  v12.2d, #0  \t\n"
+        " movi  v13.2d, #0  \t\n"
+        " movi  v14.2d, #0  \t\n"
+        " movi  v15.2d, #0  \t\n"
 
         : [A] "+r"(_A), [B] "+r"(_B),
           [v0] "=w"(v0), [v1] "=w"(v1), [v2] "=w"(v2), [v3] "=w"(v3), [v4] "=w"(v4), [v5] "=w"(v5), [v6] "=w"(v6), [v7] "=w"(v7), [v8] "=w"(v8), [v9] "=w"(v9),
@@ -275,37 +283,29 @@ void micro_kernel(
         " fadd  v17.2d, v17.2d, v1.2d    \t\n"
         " fadd  v18.2d, v18.2d, v2.2d    \t\n"
         " fadd  v19.2d, v19.2d, v3.2d    \t\n"
-        " str   q16, [%[C0]] \t\n"
-        " str   q17, [%[C0], #16] \t\n"
-        " str   q18, [%[C0], #32] \t\n"
-        " str   q19, [%[C0], #48] \t\n"
+        " stp   q16, q17, [%[C0]]        \t\n"
+        " stp   q18, q19, [%[C0], #32]   \t\n"
 
         " fadd  v20.2d, v20.2d, v4.2d    \t\n"
         " fadd  v21.2d, v21.2d, v5.2d    \t\n"
         " fadd  v22.2d, v22.2d, v6.2d    \t\n"
         " fadd  v23.2d, v23.2d, v7.2d    \t\n"
-        " str   q20, [%[C1]] \t\n"
-        " str   q21, [%[C1], #16] \t\n"
-        " str   q22, [%[C1], #32] \t\n"
-        " str   q23, [%[C1], #48] \t\n"
+        " stp   q20, q21, [%[C1]]        \t\n"
+        " stp   q22, q23, [%[C1], #32]   \t\n"
 
         " fadd  v24.2d, v24.2d,  v8.2d   \t\n"
         " fadd  v25.2d, v25.2d,  v9.2d   \t\n"
         " fadd  v26.2d, v26.2d, v10.2d   \t\n"
         " fadd  v27.2d, v27.2d, v11.2d   \t\n"
-        " str   q24, [%[C2]] \t\n"
-        " str   q25, [%[C2], #16] \t\n"
-        " str   q26, [%[C2], #32] \t\n"
-        " str   q27, [%[C2], #48] \t\n"
+        " stp   q24, q25, [%[C2]]        \t\n"
+        " stp   q26, q27, [%[C2], #32]   \t\n"
 
         " fadd  v28.2d, v28.2d, v12.2d   \t\n"
         " fadd  v29.2d, v29.2d, v13.2d   \t\n"
         " fadd  v30.2d, v30.2d, v14.2d   \t\n"
         " fadd  v31.2d, v31.2d, v15.2d   \t\n"
-        " str   q28, [%[C3]] \t\n"
-        " str   q29, [%[C3], #16] \t\n"
-        " str   q30, [%[C3], #32] \t\n"
-        " str   q31, [%[C3], #48] \t\n"
+        " stp   q28, q29, [%[C3]]        \t\n"
+        " stp   q30, q31, [%[C3], #32]   \t\n"
 
         : [v0] "+w"(v0), [v1] "+w"(v1), [v2] "+w"(v2), [v3] "+w"(v3), [v4] "+w"(v4), [v5] "+w"(v5), [v6] "+w"(v6), [v7] "+w"(v7), [v8] "+w"(v8), [v9] "+w"(v9),
           [v10] "+w"(v10), [v11] "+w"(v11), [v12] "+w"(v12), [v13] "+w"(v13), [v14] "+w"(v14), [v15] "+w"(v15), [v16] "+w"(v16), [v17] "+w"(v17), [v18] "+w"(v18), [v19] "+w"(v19),
