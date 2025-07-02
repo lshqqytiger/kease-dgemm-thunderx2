@@ -64,7 +64,6 @@
 #define NUMA_NODE 2
 #endif
 
-// tunable parameters
 #ifdef OC
 #define CM 1
 #else
@@ -78,6 +77,7 @@
 #define MR 4
 #define NR 8
 
+// tunable parameters
 #ifndef MB
 #define MB (MR * 9)
 #endif
@@ -90,9 +90,9 @@
 #define KB 280
 #endif
 
-#define MK_PRELOAD_A
-#define MK_PRELOAD_B
-#define MK_PREFETCH_C
+// #define MK_PREFETCH_C
+
+// #define USE_LDP
 
 #ifndef MK_PREFETCH_A_DISTANCE
 #define MK_PREFETCH_A_DISTANCE ((MR * 2) * 5)
@@ -115,6 +115,41 @@
 #define ARC_PREFETCH_LOCALITY LOCALITY_NONE
 #endif
 // tunable parameters
+
+#if defined(USE_LDP)
+#define VLD2(r1, r2, source) \
+    " ldp q" #r1 ", q" #r2 ", [%[" #source "]] \t\n"
+#define VLD2F(r1, r2, source) \
+    " ldp q" #r1 ", q" #r2 ", [%[" #source "]], #32 \t\n"
+#define VLD4(r1, r2, r3, r4, source)                 \
+    " ldp q" #r1 ", q" #r2 ", [%[" #source "]] \t\n" \
+    " ldp q" #r3 ", q" #r4 ", [%[" #source "], #32] \t\n"
+#define VST2(r1, r2, source) \
+    " stp q" #r1 ", q" #r2 ", [%[" #source "]] \t\n"
+#define VST4(r1, r2, r3, r4, source)                 \
+    " stp q" #r1 ", q" #r2 ", [%[" #source "]] \t\n" \
+    " stp q" #r3 ", q" #r4 ", [%[" #source "], #32] \t\n"
+#else
+#define VLD2(r1, r2, source)               \
+    " ldr q" #r1 ", [%[" #source "]] \t\n" \
+    " ldr q" #r2 ", [%[" #source "], #16] \t\n"
+#define VLD2F(r1, r2, source)                   \
+    " ldr q" #r1 ", [%[" #source "]], #16 \t\n" \
+    " ldr q" #r2 ", [%[" #source "]], #16 \t\n"
+#define VLD4(r1, r2, r3, r4, source)            \
+    " ldr q" #r1 ", [%[" #source "]] \t\n"      \
+    " ldr q" #r2 ", [%[" #source "], #16] \t\n" \
+    " ldr q" #r3 ", [%[" #source "], #32] \t\n" \
+    " ldr q" #r4 ", [%[" #source "], #48] \t\n"
+#define VST2(r1, r2, source)               \
+    " str q" #r1 ", [%[" #source "]] \t\n" \
+    " str q" #r2 ", [%[" #source "], #16] \t\n"
+#define VST4(r1, r2, r3, r4, source)            \
+    " str q" #r1 ", [%[" #source "]] \t\n"      \
+    " str q" #r2 ", [%[" #source "], #16] \t\n" \
+    " str q" #r3 ", [%[" #source "], #32] \t\n" \
+    " str q" #r4 ", [%[" #source "], #48] \t\n"
+#endif
 
 void micro_kernel(
     const uint64_t kk,
@@ -169,20 +204,12 @@ void micro_kernel(
 #endif
 
     asm volatile(
-#ifdef MK_PRELOAD_A
-        // preload A
-        " ldp    q24, q25, [%[A]], #32  \t\n"
-#endif
+        VLD2F(24, 25, A) //
         " movi   v0.2d, #0  \t\n"
         " movi   v1.2d, #0  \t\n"
         " movi   v2.2d, #0  \t\n"
-        " movi   v3.2d, #0  \t\n"
-#ifdef MK_PRELOAD_B
-        // preload B
-        " ldp    q16, q17, [%[B]]        \t\n"
-        " ldp    q18,  q19, [%[B], #32]  \t\n"
-        " add     %[B], %[B], #64        \t\n"
-#endif
+        " movi   v3.2d, #0  \t\n" VLD4(16, 17, 18, 19, B) //
+        " add     %[B], %[B], #64  \t\n"
         " movi   v4.2d, #0  \t\n"
         " movi   v5.2d, #0  \t\n"
         " movi   v6.2d, #0  \t\n"
@@ -204,7 +231,9 @@ void micro_kernel(
 #pragma unroll(2)
     for (uint64_t i = 0; i < kk >> 1; ++i)
     {
+#if MK_PREFETCH_A_DISTANCE != 0
         __builtin_prefetch(_A + MK_PREFETCH_A_DISTANCE, READ, LOCALITY_NONE);
+#endif
 #pragma unroll(MK_PREFETCH_B_DEPTH)
         for (uint8_t i = 0; i < MK_PREFETCH_B_DEPTH; ++i)
         {
@@ -212,8 +241,7 @@ void micro_kernel(
         }
 
         asm volatile(
-            " ldp    q20, q21, [%[B]]        \t\n"
-            " ldp    q22, q23, [%[B], #32]   \t\n"
+            VLD4(20, 21, 22, 23, B) //
             " fmla   v0.2d, v16.2d, v24.d[0] \t\n"
             " fmla   v1.2d, v17.2d, v24.d[0] \t\n"
             " fmla   v2.2d, v18.2d, v24.d[0] \t\n"
@@ -235,8 +263,15 @@ void micro_kernel(
             " fmla  v14.2d, v18.2d, v25.d[1] \t\n"
             " fmla  v15.2d, v19.2d, v25.d[1] \t\n"
 
+#ifdef USE_LDP
             " ldp    q16, q17, [%[B], #64]   \t\n"
             " ldp    q18, q19, [%[B], #96]   \t\n"
+#else
+            " ldr    q16, [%[B], #64]    \t\n"
+            " ldr    q17, [%[B], #80]    \t\n"
+            " ldr    q18, [%[B], #96]    \t\n"
+            " ldr    q19, [%[B], #112]   \t\n"
+#endif
             " add   %[B], %[B], #128         \t\n"
             " fmla   v0.2d, v20.2d, v26.d[0] \t\n"
             " fmla   v1.2d, v21.2d, v26.d[0] \t\n"
@@ -270,42 +305,34 @@ void micro_kernel(
     //    __builtin_prefetch(B_next + 0x00, 0, 3);
 
     asm volatile(
-        " ldp      q16, q17, [%[C0]]       \t\n"
-        " ldp      q18, q19, [%[C0], #32]  \t\n"
-        " ldp      q20, q21, [%[C1]]       \t\n"
-        " ldp      q22, q23, [%[C1], #32]  \t\n"
-        " ldp      q24, q25, [%[C2]]       \t\n"
-        " ldp      q26, q27, [%[C2], #32]  \t\n"
-        " ldp      q28, q29, [%[C3]]       \t\n"
-        " ldp      q30, q31, [%[C3], #32]  \t\n"
+        VLD4(16, 17, 18, 19, C0) //
+        VLD4(20, 21, 22, 23, C1) //
+        VLD4(24, 25, 26, 27, C2) //
+        VLD4(28, 29, 30, 31, C3) //
 
         " fadd  v16.2d, v16.2d, v0.2d    \t\n"
         " fadd  v17.2d, v17.2d, v1.2d    \t\n"
         " fadd  v18.2d, v18.2d, v2.2d    \t\n"
-        " fadd  v19.2d, v19.2d, v3.2d    \t\n"
-        " stp   q16, q17, [%[C0]]        \t\n"
-        " stp   q18, q19, [%[C0], #32]   \t\n"
+        " fadd  v19.2d, v19.2d, v3.2d    \t\n" //
+        VST4(16, 17, 18, 19, C0)               //
 
         " fadd  v20.2d, v20.2d, v4.2d    \t\n"
         " fadd  v21.2d, v21.2d, v5.2d    \t\n"
         " fadd  v22.2d, v22.2d, v6.2d    \t\n"
-        " fadd  v23.2d, v23.2d, v7.2d    \t\n"
-        " stp   q20, q21, [%[C1]]        \t\n"
-        " stp   q22, q23, [%[C1], #32]   \t\n"
+        " fadd  v23.2d, v23.2d, v7.2d    \t\n" //
+        VST4(20, 21, 22, 23, C1)               //
 
         " fadd  v24.2d, v24.2d,  v8.2d   \t\n"
         " fadd  v25.2d, v25.2d,  v9.2d   \t\n"
         " fadd  v26.2d, v26.2d, v10.2d   \t\n"
-        " fadd  v27.2d, v27.2d, v11.2d   \t\n"
-        " stp   q24, q25, [%[C2]]        \t\n"
-        " stp   q26, q27, [%[C2], #32]   \t\n"
+        " fadd  v27.2d, v27.2d, v11.2d   \t\n" //
+        VST4(24, 25, 26, 27, C2)               //
 
         " fadd  v28.2d, v28.2d, v12.2d   \t\n"
         " fadd  v29.2d, v29.2d, v13.2d   \t\n"
         " fadd  v30.2d, v30.2d, v14.2d   \t\n"
-        " fadd  v31.2d, v31.2d, v15.2d   \t\n"
-        " stp   q28, q29, [%[C3]]        \t\n"
-        " stp   q30, q31, [%[C3], #32]   \t\n"
+        " fadd  v31.2d, v31.2d, v15.2d   \t\n" //
+        VST4(28, 29, 30, 31, C3)               //
 
         : [v0] "+w"(v0), [v1] "+w"(v1), [v2] "+w"(v2), [v3] "+w"(v3), [v4] "+w"(v4), [v5] "+w"(v5), [v6] "+w"(v6), [v7] "+w"(v7), [v8] "+w"(v8), [v9] "+w"(v9),
           [v10] "+w"(v10), [v11] "+w"(v11), [v12] "+w"(v12), [v13] "+w"(v13), [v14] "+w"(v14), [v15] "+w"(v15), [v16] "+w"(v16), [v17] "+w"(v17), [v18] "+w"(v18), [v19] "+w"(v19),
@@ -445,14 +472,10 @@ void pack_arc(
 
                 inner_acc = B_acc;
                 asm volatile(
-                    " ldp    q0,  q4, [%[A0]]       \t\n"
-                    " ldp    q8, q12, [%[A0], #32]  \t\n"
-                    " ldp    q1,  q5, [%[A1]]       \t\n"
-                    " ldp    q9, q13, [%[A1], #32]  \t\n"
-                    " ldp    q2,  q6, [%[A2]]       \t\n"
-                    " ldp   q10, q14, [%[A2], #32]  \t\n"
-                    " ldp    q3,  q7, [%[A3]]       \t\n"
-                    " ldp   q11, q15, [%[A3], #32]  \t\n"
+                    VLD4(0, 4, 8, 12, A0)  //
+                    VLD4(1, 5, 9, 13, A1)  //
+                    VLD4(2, 6, 10, 14, A2) //
+                    VLD4(3, 7, 11, 15, A3) //
 
                     " st4   {v0.2d-v3.2d},   [%[B]], #64  \t\n"
                     " st4   {v4.2d-v7.2d},   [%[B]], #64  \t\n"
@@ -515,7 +538,6 @@ void pack_brr(
 struct thread_info
 {
     pthread_t thread_id;
-    uint64_t nid;
     uint64_t m;
     uint64_t n;
     uint64_t k;
@@ -525,13 +547,14 @@ struct thread_info
     uint64_t ldb;
     double *restrict C;
     uint64_t ldc;
+    double *_A;
+    double *_B;
 };
 
 static void *middle_kernel(
     void *arg)
 {
     struct thread_info *tinfo = arg;
-    const uint64_t nid = tinfo->nid;
     const uint64_t m = tinfo->m;
     const uint64_t n = tinfo->n;
     const uint64_t k = tinfo->k;
@@ -541,12 +564,8 @@ static void *middle_kernel(
     const uint64_t ldb = tinfo->ldb;
     double *C = tinfo->C;
     const uint64_t ldc = tinfo->ldc;
-
-    double *_A;
-    double *_B;
-
-    _A = numa_alloc_onnode(sizeof(double) * (MB + MR) * KB, nid);
-    _B = numa_alloc_onnode(sizeof(double) * KB * (NB + NR), nid);
+    double *_A = tinfo->_A;
+    double *_B = tinfo->_B;
 
     const uint64_t mc = ROUND_UP(m, MB);
     uint64_t mr = MB;
@@ -590,9 +609,6 @@ static void *middle_kernel(
             }
         }
     }
-
-    numa_free(_A, nid);
-    numa_free(_B, nid);
 
     return NULL;
 }
@@ -650,7 +666,19 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
         const double *B_start = B + my_n_start * 1;
         double *C_start = C + my_m_start * ldc + my_n_start * 1;
 
-        tinfo[pid].nid = nid;
+        static double *_A[TOTAL_CORE] = {
+            NULL,
+        };
+        static double *_B[TOTAL_CORE] = {
+            NULL,
+        };
+
+        if (_A[pid] == NULL)
+        {
+            _A[pid] = numa_alloc_onnode(sizeof(double) * (MB + MR) * KB, nid);
+            _B[pid] = numa_alloc_onnode(sizeof(double) * KB * (NB + NR), nid);
+        }
+
         tinfo[pid].m = my_m_size;
         tinfo[pid].n = my_n_size;
         tinfo[pid].k = k;
@@ -660,6 +688,8 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
         tinfo[pid].ldb = ldb;
         tinfo[pid].C = C_start;
         tinfo[pid].ldc = ldc;
+        tinfo[pid]._A = _A[pid];
+        tinfo[pid]._B = _B[pid];
 
         CPU_ZERO(&mask);
         CPU_SET(pid, &mask);

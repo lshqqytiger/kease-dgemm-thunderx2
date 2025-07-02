@@ -1,9 +1,8 @@
 .vscode
 
-asm
+log
 out
 
 kernel_others
-reports
 
 trash
