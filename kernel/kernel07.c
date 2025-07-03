@@ -208,7 +208,8 @@ void micro_kernel(
         " movi   v0.2d, #0  \t\n"
         " movi   v1.2d, #0  \t\n"
         " movi   v2.2d, #0  \t\n"
-        " movi   v3.2d, #0  \t\n" VLD4(16, 17, 18, 19, B) //
+        " movi   v3.2d, #0  \t\n" //
+        VLD4(16, 17, 18, 19, B)   //
         " add     %[B], %[B], #64  \t\n"
         " movi   v4.2d, #0  \t\n"
         " movi   v5.2d, #0  \t\n"
@@ -373,31 +374,20 @@ void inner_kernel(
     const uint64_t ldc)
 {
     const uint64_t mmc = ROUND_UP(mm, MR);
-    uint64_t mmr = MR;
-    const uint64_t mmr_ = mm % MR;
-    if (mmr_ != 0)
-    {
-        mmr = mmr_;
-    }
-
+    const uint64_t mmr = mm % MR;
     const uint64_t nnc = ROUND_UP(nn, NR);
-    uint64_t nnr = NR;
-    const uint64_t nnr_ = nn % NR;
-    if (nnr_ != 0)
-    {
-        nnr = nnr_;
-    }
+    const uint64_t nnr = nn % NR;
 
     const double *A;
 
     for (uint64_t nni = 0; nni < nnc; ++nni)
     {
-        const uint64_t nnn = LIKELY(nni != nnc - 1) ? NR : nnr;
+        const uint64_t nnn = (nni != nnc - 1 || nnr == 0) ? NR : nnr;
 
         A = _A;
         for (uint64_t mmi = 0; mmi < mmc; ++mmi)
         {
-            const uint64_t mmm = LIKELY(mmi != mmc - 1) ? MR : mmr;
+            const register uint64_t mmm = (mmi != mmc - 1 || mmr == 0) ? MR : mmr;
 
             if (LIKELY(mmm == MR && nnn == NR))
             {
@@ -446,7 +436,7 @@ void pack_arc(
 
     for (uint64_t mmi = 0; LIKELY(mmi < mmc); ++mmi)
     {
-        const register uint64_t mmm = LIKELY(mmi != mmc - 1) ? MR : mmr;
+        const uint64_t mmm = LIKELY(mmi != mmc - 1) ? MR : mmr;
 
 #pragma unroll(ARC_PREFETCH_DEPTH)
         for (uint8_t i = 0; i < ARC_PREFETCH_DEPTH; ++i)
@@ -461,7 +451,7 @@ void pack_arc(
         B_acc = B;
         for (uint64_t kki = 0; UNLIKELY(kki < kkc); ++kki)
         {
-            const uint64_t kkk = LIKELY(kki != kkc - 1) ? CACHE_ELEM : kkr;
+            const register uint64_t kkk = LIKELY(kki != kkc - 1) ? CACHE_ELEM : kkr;
 
             if (LIKELY(mmm == MR && kkk == CACHE_ELEM))
             {
