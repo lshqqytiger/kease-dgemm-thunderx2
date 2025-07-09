@@ -27,18 +27,6 @@
 #include <numa.h>
 #include <pthread.h>
 
-#define PTHREAD_CALL(expr)  \
-    do                      \
-    {                       \
-        int err = (expr);   \
-        if (err == 0)       \
-        {                   \
-            break;          \
-        }                   \
-        perror(#expr);      \
-        exit(EXIT_FAILURE); \
-    } while (0)
-
 #define UNLIKELY(expr) __builtin_expect(!!(expr), 0)
 #define LIKELY(expr) __builtin_expect(!!(expr), 1)
 
@@ -79,27 +67,31 @@
 
 // tunable parameters
 #ifndef MB
-#define MB (MR * 9)
+#define MB (MR * 7)
 #endif
 
 #ifndef NB
-#define NB (NR * 43)
+#define NB (NR * 49)
 #endif
 
 #ifndef KB
-#define KB 280
+#define KB (8 * 33)
 #endif
 
-// #define MK_PREFETCH_C
+#define MK_PREFETCH_C
 
 // #define USE_LDP
 
+#ifndef MK_UNROLL_DEPTH
+#define MK_UNROLL_DEPTH 2
+#endif
+
 #ifndef MK_PREFETCH_A_DISTANCE
-#define MK_PREFETCH_A_DISTANCE ((MR * 2) * 5)
+#define MK_PREFETCH_A_DISTANCE (MR * 7)
 #endif
 
 #ifndef MK_PREFETCH_B_DISTANCE
-#define MK_PREFETCH_B_DISTANCE ((NR * 2) * 5)
+#define MK_PREFETCH_B_DISTANCE (NR * 10)
 #endif
 
 // 0 ~ 4
@@ -108,7 +100,7 @@
 #endif
 
 #ifndef ARC_PREFETCH_DEPTH
-#define ARC_PREFETCH_DEPTH 4
+#define ARC_PREFETCH_DEPTH 2
 #endif
 
 #ifndef ARC_PREFETCH_LOCALITY
@@ -152,7 +144,7 @@
 #endif
 
 void micro_kernel(
-    const uint64_t kk,
+    uint64_t kk,
     const double *restrict _A,
     const double *restrict _B,
     double *restrict C,
@@ -229,8 +221,9 @@ void micro_kernel(
           [v10] "=w"(v10), [v11] "=w"(v11), [v12] "=w"(v12), [v13] "=w"(v13), [v14] "=w"(v14), [v15] "=w"(v15), [v16] "=w"(v16), [v17] "=w"(v17), [v18] "=w"(v18), [v19] "=w"(v19),
           [v24] "=w"(v24), [v25] "=w"(v25));
 
-#pragma unroll(2)
-    for (uint64_t i = 0; i < kk >> 1; ++i)
+    kk >>= 1;
+#pragma unroll(MK_UNROLL_DEPTH)
+    for (uint64_t i = 0; i < kk; ++i)
     {
 #if MK_PREFETCH_A_DISTANCE != 0
         __builtin_prefetch(_A + MK_PREFETCH_A_DISTANCE, READ, LOCALITY_NONE);
@@ -301,9 +294,6 @@ void micro_kernel(
               [v10] "+w"(v10), [v11] "+w"(v11), [v12] "+w"(v12), [v13] "+w"(v13), [v14] "+w"(v14), [v15] "+w"(v15), [v16] "+w"(v16), [v17] "+w"(v17), [v18] "+w"(v18), [v19] "+w"(v19),
               [v20] "+w"(v20), [v21] "+w"(v21), [v22] "+w"(v22), [v23] "+w"(v23), [v24] "+w"(v24), [v25] "+w"(v25), [v26] "+w"(v26), [v27] "+w"(v27));
     }
-
-    //    __builtin_prefetch(A_next + 0x00, 0, 3);
-    //    __builtin_prefetch(B_next + 0x00, 0, 3);
 
     asm volatile(
         VLD4(16, 17, 18, 19, C0) //
@@ -436,7 +426,7 @@ void pack_arc(
 
     for (uint64_t mmi = 0; LIKELY(mmi < mmc); ++mmi)
     {
-        const uint64_t mmm = LIKELY(mmi != mmc - 1) ? MR : mmr;
+        const uint64_t mmm = mmi != mmc - 1 ? MR : mmr;
 
 #pragma unroll(ARC_PREFETCH_DEPTH)
         for (uint8_t i = 0; i < ARC_PREFETCH_DEPTH; ++i)
@@ -451,7 +441,7 @@ void pack_arc(
         B_acc = B;
         for (uint64_t kki = 0; UNLIKELY(kki < kkc); ++kki)
         {
-            const register uint64_t kkk = LIKELY(kki != kkc - 1) ? CACHE_ELEM : kkr;
+            const register uint64_t kkk = kki != kkc - 1 ? CACHE_ELEM : kkr;
 
             if (LIKELY(mmm == MR && kkk == CACHE_ELEM))
             {
@@ -684,15 +674,15 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
         CPU_ZERO(&mask);
         CPU_SET(pid, &mask);
 
-        PTHREAD_CALL(pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &mask));
-        PTHREAD_CALL(pthread_create(&tinfo[pid].thread_id, &attr, &middle_kernel, &tinfo[pid]));
+        pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &mask);
+        pthread_create(&tinfo[pid].thread_id, &attr, &middle_kernel, &tinfo[pid]);
     }
 
-    PTHREAD_CALL(pthread_attr_destroy(&attr));
+    pthread_attr_destroy(&attr);
 
     for (uint64_t pid = 0; pid < TOTAL_CORE; ++pid)
     {
         void *res;
-        PTHREAD_CALL(pthread_join(tinfo[pid].thread_id, &res));
+        pthread_join(tinfo[pid].thread_id, &res);
     }
 }
