@@ -1,5 +1,5 @@
 /**
- * @file kernel07
+ * @file kernel.neon.c
  * @author Enoch Jung
  * @author Seunghoon Lee
  * @brief dgemm for
@@ -10,8 +10,7 @@
           - k     : even number
           - alpha : 1.0
           - beta  : 1.0
- * @date 2023-10-16
- * @date 2025-01-22
+ * @date 2025-07-xx
  */
 
 #define _GNU_SOURCE
@@ -78,9 +77,7 @@
 #define KB (8 * 33)
 #endif
 
-#define MK_PREFETCH_C
-
-// #define USE_LDP
+#define USE_LDP
 
 #ifndef MK_UNROLL_DEPTH
 #define MK_UNROLL_DEPTH 2
@@ -90,6 +87,10 @@
 #define MK_PREFETCH_A_DISTANCE (MR * 7)
 #endif
 
+#ifndef MK_PREFETCH_A_LOCALITY
+#define MK_PREFETCH_A_LOCALITY LOCALITY_NONE
+#endif
+
 #ifndef MK_PREFETCH_B_DISTANCE
 #define MK_PREFETCH_B_DISTANCE (NR * 10)
 #endif
@@ -97,6 +98,18 @@
 // 0 ~ 4
 #ifndef MK_PREFETCH_B_DEPTH
 #define MK_PREFETCH_B_DEPTH 2
+#endif
+
+#ifndef MK_PREFETCH_B_LOCALITY
+#define MK_PREFETCH_B_LOCALITY LOCALITY_NONE
+#endif
+
+#ifndef MK_PREFETCH_C_DEPTH
+#define MK_PREFETCH_C_DEPTH 4
+#endif
+
+#ifndef MK_PREFETCH_C_LOCALITY
+#define MK_PREFETCH_C_LOCALITY LOCALITY_HIGH
 #endif
 
 #ifndef ARC_PREFETCH_DEPTH
@@ -150,11 +163,6 @@ void micro_kernel(
     double *restrict C,
     const uint64_t ldc)
 {
-    register double *C0 = C + 0 * ldc;
-    register double *C1 = C + 1 * ldc;
-    register double *C2 = C + 2 * ldc;
-    register double *C3 = C + 3 * ldc;
-
     register float64x2_t v0 asm("v0");
     register float64x2_t v1 asm("v1");
     register float64x2_t v2 asm("v2");
@@ -188,12 +196,16 @@ void micro_kernel(
     register float64x2_t v30 asm("v30");
     register float64x2_t v31 asm("v31");
 
-#ifdef MK_PREFETCH_C
-    __builtin_prefetch(C0, READ, LOCALITY_HIGH);
-    __builtin_prefetch(C1, READ, LOCALITY_HIGH);
-    __builtin_prefetch(C2, READ, LOCALITY_HIGH);
-    __builtin_prefetch(C3, READ, LOCALITY_HIGH);
-#endif
+#pragma unroll(MK_PREFETCH_C_DEPTH)
+    for (uint8_t i = 0; i < MK_PREFETCH_C_DEPTH; ++i)
+    {
+        __builtin_prefetch(C + i * ldc, READ, MK_PREFETCH_C_LOCALITY);
+    }
+
+    register double *C0 = C + 0 * ldc;
+    register double *C1 = C + 1 * ldc;
+    register double *C2 = C + 2 * ldc;
+    register double *C3 = C + 3 * ldc;
 
     asm volatile(
         VLD2F(24, 25, A) //
@@ -226,12 +238,12 @@ void micro_kernel(
     for (uint64_t i = 0; i < kk; ++i)
     {
 #if MK_PREFETCH_A_DISTANCE != 0
-        __builtin_prefetch(_A + MK_PREFETCH_A_DISTANCE, READ, LOCALITY_NONE);
+        __builtin_prefetch(_A + MK_PREFETCH_A_DISTANCE, READ, MK_PREFETCH_A_LOCALITY);
 #endif
 #pragma unroll(MK_PREFETCH_B_DEPTH)
         for (uint8_t i = 0; i < MK_PREFETCH_B_DEPTH; ++i)
         {
-            __builtin_prefetch(_B + MK_PREFETCH_B_DISTANCE + 8 * i, READ, LOCALITY_HIGH);
+            __builtin_prefetch(_B + MK_PREFETCH_B_DISTANCE + 8 * i, READ, MK_PREFETCH_B_LOCALITY);
         }
 
         asm volatile(
