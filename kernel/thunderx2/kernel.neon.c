@@ -66,7 +66,7 @@
 
 // tunable parameters
 #ifndef MB
-#define MB (MR * 7)
+#define MB (MR * 8)
 #endif
 
 #ifndef NB
@@ -113,7 +113,7 @@
 #endif
 
 #ifndef ARC_PREFETCH_DEPTH
-#define ARC_PREFETCH_DEPTH 2
+#define ARC_PREFETCH_DEPTH 4
 #endif
 
 #ifndef ARC_PREFETCH_LOCALITY
