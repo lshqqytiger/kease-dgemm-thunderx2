@@ -1,5 +1,5 @@
 /**
- * @file kernel.neon.c
+ * @file thunderx2/kernel.neon.c
  * @author Enoch Jung
  * @author Seunghoon Lee
  * @brief dgemm for
@@ -26,22 +26,7 @@
 #include <numa.h>
 #include <pthread.h>
 
-#define UNLIKELY(expr) __builtin_expect(!!(expr), 0)
-#define LIKELY(expr) __builtin_expect(!!(expr), 1)
-
-#define ROUND_UP(a, b) ((a + b - 1) / b)
-
-#define READ 0
-#define WRITE 1
-
-#define LOCALITY_NONE 0
-#define LOCALITY_LOW 1
-#define LOCALITY_MODERATE 2
-#define LOCALITY_HIGH 3
-
-#define PAGE_SIZE 4096
-#define CACHE_LINE 64
-#define CACHE_ELEM (CACHE_LINE / 8)
+#include "common.h"
 
 #ifdef OC
 #define TOTAL_CORE 1
@@ -68,11 +53,9 @@
 #ifndef MB
 #define MB (MR * 8)
 #endif
-
 #ifndef NB
 #define NB (NR * 49)
 #endif
-
 #ifndef KB
 #define KB (8 * 33)
 #endif
@@ -113,7 +96,7 @@
 #endif
 
 #ifndef ARC_PREFETCH_DEPTH
-#define ARC_PREFETCH_DEPTH 4
+#define ARC_PREFETCH_DEPTH 3
 #endif
 
 #ifndef ARC_PREFETCH_LOCALITY
