@@ -619,6 +619,13 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
     pthread_attr_t attr;
     pthread_attr_init(&attr);
 
+    static double *_A[TOTAL_CORE] = {
+        NULL,
+    };
+    static double *_B[TOTAL_CORE] = {
+        NULL,
+    };
+
     for (uint64_t pid = 0; pid < TOTAL_CORE; ++pid)
     {
         const uint64_t nid = pid / (CM * CN / NUMA_NODE);
@@ -641,18 +648,15 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
         const double *B_start = B + my_n_start * 1;
         double *C_start = C + my_m_start * ldc + my_n_start * 1;
 
-        static double *_A[TOTAL_CORE] = {
-            NULL,
-        };
-        static double *_B[TOTAL_CORE] = {
-            NULL,
-        };
-
+#ifndef DISABLE_MEMORY_BUFFER
         if (_A[pid] == NULL)
         {
+#endif
             _A[pid] = numa_alloc_onnode(sizeof(double) * (MB + MR) * KB, nid);
             _B[pid] = numa_alloc_onnode(sizeof(double) * KB * (NB + NR), nid);
+#ifndef DISABLE_MEMORY_BUFFER
         }
+#endif
 
         tinfo[pid].m = my_m_size;
         tinfo[pid].n = my_n_size;
@@ -679,5 +683,10 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
     {
         void *res;
         pthread_join(tinfo[pid].thread_id, &res);
+
+#ifdef DISABLE_MEMORY_BUFFER
+        numa_free(_A[pid], sizeof(double) * (MB + MR) * KB);
+        numa_free(_B[pid], sizeof(double) * KB * (NB + NR));
+#endif
     }
 }
