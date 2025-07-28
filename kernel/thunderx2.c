@@ -1,9 +1,9 @@
 /**
- * @file thunderx2/kernel.neon.c
+ * @file thunderx2.c
  * @author Enoch Jung
  * @author Seunghoon Lee
  * @brief dgemm for
-          - core  : 64 cores,
+          - cores : 64
           - A     : RowMajor
           - B     : RowMajor
           - C     : RowMajor
@@ -25,84 +25,20 @@
 #include <armpl.h>
 #include <numa.h>
 #include <pthread.h>
+#include <omp.h>
 
 #include "common.h"
 
 #ifdef OC
-#define TOTAL_CORE 1
-#define NUMA_NODE 1
-#else
-#define TOTAL_CORE 64
-#define NUMA_NODE 2
-#endif
+#include "thunderx2.oc.inc"
 
-#ifdef OC
-#define CM 1
+#define numa_alloc_onnode(size, _) numa_alloc(size)
 #else
-#ifndef CM
-#define CM 8
+#include "thunderx2.mc.inc"
 #endif
-#endif
-
-#define CN (TOTAL_CORE / CM)
 
 #define MR 4
 #define NR 8
-
-// tunable parameters
-#ifndef MB
-#define MB (MR * 8)
-#endif
-#ifndef NB
-#define NB (NR * 49)
-#endif
-#ifndef KB
-#define KB (8 * 33)
-#endif
-
-#define USE_LDP
-
-#ifndef MK_UNROLL_DEPTH
-#define MK_UNROLL_DEPTH 2
-#endif
-
-#ifndef MK_PREFETCH_A_DISTANCE
-#define MK_PREFETCH_A_DISTANCE (MR * 7)
-#endif
-
-#ifndef MK_PREFETCH_A_LOCALITY
-#define MK_PREFETCH_A_LOCALITY LOCALITY_NONE
-#endif
-
-#ifndef MK_PREFETCH_B_DISTANCE
-#define MK_PREFETCH_B_DISTANCE (NR * 10)
-#endif
-
-// 0 ~ 4
-#ifndef MK_PREFETCH_B_DEPTH
-#define MK_PREFETCH_B_DEPTH 2
-#endif
-
-#ifndef MK_PREFETCH_B_LOCALITY
-#define MK_PREFETCH_B_LOCALITY LOCALITY_NONE
-#endif
-
-#ifndef MK_PREFETCH_C_DEPTH
-#define MK_PREFETCH_C_DEPTH 4
-#endif
-
-#ifndef MK_PREFETCH_C_LOCALITY
-#define MK_PREFETCH_C_LOCALITY LOCALITY_HIGH
-#endif
-
-#ifndef ARC_PREFETCH_DEPTH
-#define ARC_PREFETCH_DEPTH 3
-#endif
-
-#ifndef ARC_PREFETCH_LOCALITY
-#define ARC_PREFETCH_LOCALITY LOCALITY_NONE
-#endif
-// tunable parameters
 
 #if defined(USE_LDP)
 #define VLD2(r1, r2, source) \
@@ -139,7 +75,7 @@
     " str q" #r4 ", [%[" #source "], #48] \t\n"
 #endif
 
-void micro_kernel(
+__forceinline void micro_kernel(
     uint64_t kk,
     const double *restrict _A,
     const double *restrict _B,
@@ -512,7 +448,7 @@ void pack_brr(
 
 struct thread_info
 {
-    pthread_t thread_id;
+    pthread_t tid;
     uint64_t m;
     uint64_t n;
     uint64_t k;
@@ -526,22 +462,9 @@ struct thread_info
     double *_B;
 };
 
-static void *middle_kernel(
-    void *arg)
+__forceinline void *middle_kernel(const uint64_t m, const uint64_t n, const uint64_t k, const double *A,
+                                  const uint64_t lda, const double *B, const uint64_t ldb, double *C, const uint64_t ldc, double *_A, double *_B)
 {
-    struct thread_info *tinfo = arg;
-    const uint64_t m = tinfo->m;
-    const uint64_t n = tinfo->n;
-    const uint64_t k = tinfo->k;
-    const double *A = tinfo->A;
-    const uint64_t lda = tinfo->lda;
-    const double *B = tinfo->B;
-    const uint64_t ldb = tinfo->ldb;
-    double *C = tinfo->C;
-    const uint64_t ldc = tinfo->ldc;
-    double *_A = tinfo->_A;
-    double *_B = tinfo->_B;
-
     const uint64_t mc = ROUND_UP(m, MB);
     uint64_t mr = MB;
     const uint64_t mr_ = m % MB;
@@ -588,7 +511,31 @@ static void *middle_kernel(
     return NULL;
 }
 
-#define MIN(a, b) ((a < b) ? (a) : (b))
+static void *thread_routine(
+    void *arg)
+{
+    struct thread_info *tinfo = arg;
+    const uint64_t m = tinfo->m;
+    const uint64_t n = tinfo->n;
+    const uint64_t k = tinfo->k;
+    const double *A = tinfo->A;
+    const uint64_t lda = tinfo->lda;
+    const double *B = tinfo->B;
+    const uint64_t ldb = tinfo->ldb;
+    double *C = tinfo->C;
+    const uint64_t ldc = tinfo->ldc;
+    double *_A = tinfo->_A;
+    double *_B = tinfo->_B;
+
+    middle_kernel(m, n, k, A, lda, B, ldb, C, ldc, _A, _B);
+
+    return NULL;
+}
+
+__forceinline uint64_t min(const uint64_t a, const uint64_t b)
+{
+    return a < b ? a : b;
+}
 
 void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
                 CBLAS_TRANSPOSE TransB, int64_t m, int64_t n, int64_t k,
@@ -602,9 +549,31 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
     assert(is_A_row == 1);
     assert(is_B_row == 1);
     assert(is_C_row == 1);
+    assert(k % 2 == 0);
     assert(alpha == 1.0);
     assert(beta == 1.0);
 
+#ifdef OC
+    static double *_A = NULL;
+    static double *_B = NULL;
+
+#ifndef DISABLE_MEMORY_BUFFER
+    if (_A == NULL)
+    {
+#endif
+        _A = numa_alloc(sizeof(double) * (MB + MR) * KB);
+        _B = numa_alloc(sizeof(double) * KB * NB);
+#ifndef DISABLE_MEMORY_BUFFER
+    }
+#endif
+
+    middle_kernel(m, n, k, A, lda, B, ldb, C, ldc, _A, _B);
+
+#ifdef DISABLE_MEMORY_BUFFER
+    numa_free(_A, sizeof(double) * (MB + MR) * KB);
+    numa_free(_B, sizeof(double) * KB * NB);
+#endif
+#else
     const uint64_t total_m_jobs = ROUND_UP(m, MR);
     const uint64_t min_each_m_jobs = total_m_jobs / CM;
     const uint64_t rest_m_jobs = total_m_jobs % CM;
@@ -628,20 +597,22 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
 
     for (uint64_t pid = 0; pid < TOTAL_CORE; ++pid)
     {
+#ifndef OC
         const uint64_t nid = pid / (CM * CN / NUMA_NODE);
+#endif
         const uint64_t m_pid = pid % CM;
         const uint64_t n_pid = pid / CM;
 
-        const uint64_t my_m_idx_start = m_pid * min_each_m_jobs + MIN(m_pid, rest_m_jobs);
-        const uint64_t my_m_idx_end = (m_pid + 1) * min_each_m_jobs + MIN(m_pid + 1, rest_m_jobs);
-        const uint64_t my_m_start = MIN(my_m_idx_start * MR, m);
-        const uint64_t my_m_end = MIN(my_m_idx_end * MR, m);
+        const uint64_t my_m_idx_start = m_pid * min_each_m_jobs + min(m_pid, rest_m_jobs);
+        const uint64_t my_m_idx_end = (m_pid + 1) * min_each_m_jobs + min(m_pid + 1, rest_m_jobs);
+        const uint64_t my_m_start = min(my_m_idx_start * MR, m);
+        const uint64_t my_m_end = min(my_m_idx_end * MR, m);
         const uint64_t my_m_size = my_m_end - my_m_start;
 
-        const uint64_t my_n_idx_start = n_pid * min_each_n_jobs + MIN(n_pid, rest_n_jobs);
-        const uint64_t my_n_idx_end = (n_pid + 1) * min_each_n_jobs + MIN(n_pid + 1, rest_n_jobs);
-        const uint64_t my_n_start = MIN(my_n_idx_start * NR, n);
-        const uint64_t my_n_end = MIN(my_n_idx_end * NR, n);
+        const uint64_t my_n_idx_start = n_pid * min_each_n_jobs + min(n_pid, rest_n_jobs);
+        const uint64_t my_n_idx_end = (n_pid + 1) * min_each_n_jobs + min(n_pid + 1, rest_n_jobs);
+        const uint64_t my_n_start = min(my_n_idx_start * NR, n);
+        const uint64_t my_n_end = min(my_n_idx_end * NR, n);
         const uint64_t my_n_size = my_n_end - my_n_start;
 
         const double *A_start = A + my_m_start * lda;
@@ -674,7 +645,7 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
         CPU_SET(pid, &mask);
 
         pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &mask);
-        pthread_create(&tinfo[pid].thread_id, &attr, &middle_kernel, &tinfo[pid]);
+        pthread_create(&tinfo[pid].tid, &attr, &thread_routine, &tinfo[pid]);
     }
 
     pthread_attr_destroy(&attr);
@@ -682,11 +653,12 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
     for (uint64_t pid = 0; pid < TOTAL_CORE; ++pid)
     {
         void *res;
-        pthread_join(tinfo[pid].thread_id, &res);
+        pthread_join(tinfo[pid].tid, &res);
 
 #ifdef DISABLE_MEMORY_BUFFER
         numa_free(_A[pid], sizeof(double) * (MB + MR) * KB);
         numa_free(_B[pid], sizeof(double) * KB * (NB + NR));
 #endif
     }
+#endif
 }

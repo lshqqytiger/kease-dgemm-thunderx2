@@ -15,3 +15,5 @@
 #define LOCALITY_LOW 1
 #define LOCALITY_MODERATE 2
 #define LOCALITY_HIGH 3
+
+#define __forceinline __attribute__((always_inline)) inline
