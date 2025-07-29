@@ -562,7 +562,7 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
     {
 #endif
         _A = numa_alloc(sizeof(double) * (MB + MR) * KB);
-        _B = numa_alloc(sizeof(double) * KB * NB);
+        _B = numa_alloc(sizeof(double) * KB * (NB + NR));
 #ifndef DISABLE_MEMORY_BUFFER
     }
 #endif
@@ -571,7 +571,7 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
 
 #ifdef DISABLE_MEMORY_BUFFER
     numa_free(_A, sizeof(double) * (MB + MR) * KB);
-    numa_free(_B, sizeof(double) * KB * NB);
+    numa_free(_B, sizeof(double) * KB * (NB + NR));
 #endif
 #else
     const uint64_t total_m_jobs = ROUND_UP(m, MR);
