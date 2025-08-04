@@ -25,7 +25,6 @@
 #include <armpl.h>
 #include <numa.h>
 #include <pthread.h>
-#include <omp.h>
 
 #include "common.h"
 
@@ -41,34 +40,34 @@
 #define NR 8
 
 #if defined(USE_LDP)
-#define VLD2(r1, r2, source) \
+#define VLD1_Q2(r1, r2, source) \
     " ldp q" #r1 ", q" #r2 ", [%[" #source "]] \t\n"
-#define VLD2F(r1, r2, source) \
+#define VLD1_Q2_F(r1, r2, source) \
     " ldp q" #r1 ", q" #r2 ", [%[" #source "]], #32 \t\n"
-#define VLD4(r1, r2, r3, r4, source)                 \
+#define VLD1_Q4(r1, r2, r3, r4, source)              \
     " ldp q" #r1 ", q" #r2 ", [%[" #source "]] \t\n" \
     " ldp q" #r3 ", q" #r4 ", [%[" #source "], #32] \t\n"
-#define VST2(r1, r2, source) \
+#define VST1_Q2(r1, r2, source) \
     " stp q" #r1 ", q" #r2 ", [%[" #source "]] \t\n"
-#define VST4(r1, r2, r3, r4, source)                 \
+#define VST1_Q4(r1, r2, r3, r4, source)              \
     " stp q" #r1 ", q" #r2 ", [%[" #source "]] \t\n" \
     " stp q" #r3 ", q" #r4 ", [%[" #source "], #32] \t\n"
 #else
-#define VLD2(r1, r2, source)               \
+#define VLD1_Q2(r1, r2, source)            \
     " ldr q" #r1 ", [%[" #source "]] \t\n" \
     " ldr q" #r2 ", [%[" #source "], #16] \t\n"
-#define VLD2F(r1, r2, source)                   \
+#define VLD1_Q2_F(r1, r2, source)               \
     " ldr q" #r1 ", [%[" #source "]], #16 \t\n" \
     " ldr q" #r2 ", [%[" #source "]], #16 \t\n"
-#define VLD4(r1, r2, r3, r4, source)            \
+#define VLD1_Q4(r1, r2, r3, r4, source)         \
     " ldr q" #r1 ", [%[" #source "]] \t\n"      \
     " ldr q" #r2 ", [%[" #source "], #16] \t\n" \
     " ldr q" #r3 ", [%[" #source "], #32] \t\n" \
     " ldr q" #r4 ", [%[" #source "], #48] \t\n"
-#define VST2(r1, r2, source)               \
+#define VST1_Q2(r1, r2, source)            \
     " str q" #r1 ", [%[" #source "]] \t\n" \
     " str q" #r2 ", [%[" #source "], #16] \t\n"
-#define VST4(r1, r2, r3, r4, source)            \
+#define VST1_Q4(r1, r2, r3, r4, source)         \
     " str q" #r1 ", [%[" #source "]] \t\n"      \
     " str q" #r2 ", [%[" #source "], #16] \t\n" \
     " str q" #r3 ", [%[" #source "], #32] \t\n" \
@@ -127,12 +126,12 @@ __forceinline void micro_kernel(
     register double *C3 = C + 3 * ldc;
 
     asm volatile(
-        VLD2F(24, 25, A) //
+        VLD1_Q2_F(24, 25, A) //
         " movi   v0.2d, #0  \t\n"
         " movi   v1.2d, #0  \t\n"
         " movi   v2.2d, #0  \t\n"
-        " movi   v3.2d, #0  \t\n" //
-        VLD4(16, 17, 18, 19, B)   //
+        " movi   v3.2d, #0  \t\n"  //
+        VLD1_Q4(16, 17, 18, 19, B) //
         " add     %[B], %[B], #64  \t\n"
         " movi   v4.2d, #0  \t\n"
         " movi   v5.2d, #0  \t\n"
@@ -166,7 +165,7 @@ __forceinline void micro_kernel(
         }
 
         asm volatile(
-            VLD4(20, 21, 22, 23, B) //
+            VLD1_Q4(20, 21, 22, 23, B) //
             " fmla   v0.2d, v16.2d, v24.d[0] \t\n"
             " fmla   v1.2d, v17.2d, v24.d[0] \t\n"
             " fmla   v2.2d, v18.2d, v24.d[0] \t\n"
@@ -180,23 +179,18 @@ __forceinline void micro_kernel(
 
             " ldr    q27, [%[A], #16]        \t\n"
             " fmla   v8.2d, v16.2d, v25.d[0] \t\n"
-            " fmla   v9.2d, v17.2d, v25.d[0] \t\n"
-            " fmla  v10.2d, v18.2d, v25.d[0] \t\n"
-            " fmla  v11.2d, v19.2d, v25.d[0] \t\n"
             " fmla  v12.2d, v16.2d, v25.d[1] \t\n"
-            " fmla  v13.2d, v17.2d, v25.d[1] \t\n"
-            " fmla  v14.2d, v18.2d, v25.d[1] \t\n"
-            " fmla  v15.2d, v19.2d, v25.d[1] \t\n"
-
-#ifdef USE_LDP
-            " ldp    q16, q17, [%[B], #64]   \t\n"
-            " ldp    q18, q19, [%[B], #96]   \t\n"
-#else
             " ldr    q16, [%[B], #64]    \t\n"
+            " fmla   v9.2d, v17.2d, v25.d[0] \t\n"
+            " fmla  v13.2d, v17.2d, v25.d[1] \t\n"
             " ldr    q17, [%[B], #80]    \t\n"
+            " fmla  v10.2d, v18.2d, v25.d[0] \t\n"
+            " fmla  v14.2d, v18.2d, v25.d[1] \t\n"
             " ldr    q18, [%[B], #96]    \t\n"
+            " fmla  v11.2d, v19.2d, v25.d[0] \t\n"
+            " fmla  v15.2d, v19.2d, v25.d[1] \t\n"
             " ldr    q19, [%[B], #112]   \t\n"
-#endif
+
             " add   %[B], %[B], #128         \t\n"
             " fmla   v0.2d, v20.2d, v26.d[0] \t\n"
             " fmla   v1.2d, v21.2d, v26.d[0] \t\n"
@@ -227,34 +221,34 @@ __forceinline void micro_kernel(
     }
 
     asm volatile(
-        VLD4(16, 17, 18, 19, C0) //
-        VLD4(20, 21, 22, 23, C1) //
-        VLD4(24, 25, 26, 27, C2) //
-        VLD4(28, 29, 30, 31, C3) //
+        VLD1_Q4(16, 17, 18, 19, C0) //
+        VLD1_Q4(20, 21, 22, 23, C1) //
+        VLD1_Q4(24, 25, 26, 27, C2) //
+        VLD1_Q4(28, 29, 30, 31, C3) //
 
         " fadd  v16.2d, v16.2d, v0.2d    \t\n"
         " fadd  v17.2d, v17.2d, v1.2d    \t\n"
         " fadd  v18.2d, v18.2d, v2.2d    \t\n"
         " fadd  v19.2d, v19.2d, v3.2d    \t\n" //
-        VST4(16, 17, 18, 19, C0)               //
+        VST1_Q4(16, 17, 18, 19, C0)            //
 
         " fadd  v20.2d, v20.2d, v4.2d    \t\n"
         " fadd  v21.2d, v21.2d, v5.2d    \t\n"
         " fadd  v22.2d, v22.2d, v6.2d    \t\n"
         " fadd  v23.2d, v23.2d, v7.2d    \t\n" //
-        VST4(20, 21, 22, 23, C1)               //
+        VST1_Q4(20, 21, 22, 23, C1)            //
 
         " fadd  v24.2d, v24.2d,  v8.2d   \t\n"
         " fadd  v25.2d, v25.2d,  v9.2d   \t\n"
         " fadd  v26.2d, v26.2d, v10.2d   \t\n"
         " fadd  v27.2d, v27.2d, v11.2d   \t\n" //
-        VST4(24, 25, 26, 27, C2)               //
+        VST1_Q4(24, 25, 26, 27, C2)            //
 
         " fadd  v28.2d, v28.2d, v12.2d   \t\n"
         " fadd  v29.2d, v29.2d, v13.2d   \t\n"
         " fadd  v30.2d, v30.2d, v14.2d   \t\n"
         " fadd  v31.2d, v31.2d, v15.2d   \t\n" //
-        VST4(28, 29, 30, 31, C3)               //
+        VST1_Q4(28, 29, 30, 31, C3)            //
 
         : [v0] "+w"(v0), [v1] "+w"(v1), [v2] "+w"(v2), [v3] "+w"(v3), [v4] "+w"(v4), [v5] "+w"(v5), [v6] "+w"(v6), [v7] "+w"(v7), [v8] "+w"(v8), [v9] "+w"(v9),
           [v10] "+w"(v10), [v11] "+w"(v11), [v12] "+w"(v12), [v13] "+w"(v13), [v14] "+w"(v14), [v15] "+w"(v15), [v16] "+w"(v16), [v17] "+w"(v17), [v18] "+w"(v18), [v19] "+w"(v19),
@@ -275,7 +269,6 @@ void micro_dxpy(
 {
     for (uint64_t i = 0; i < m; ++i)
     {
-#pragma unroll(2)
         for (uint64_t j = 0; j < n; ++j)
         {
             C[j] += _C[j];
@@ -308,7 +301,7 @@ void inner_kernel(
         A = _A;
         for (uint64_t mmi = 0; mmi < mmc; ++mmi)
         {
-            const register uint64_t mmm = (mmi != mmc - 1 || mmr == 0) ? MR : mmr;
+            const uint64_t mmm = (mmi != mmc - 1 || mmr == 0) ? MR : mmr;
 
             if (LIKELY(mmm == MR && nnn == NR))
             {
@@ -316,7 +309,7 @@ void inner_kernel(
             }
             else
             {
-                double _C[MR * NR] __attribute__((aligned(CACHE_LINE))) = {};
+                double _C[MR * NR] __attribute__((aligned(CACHE_LINE)));
                 micro_kernel(kk, A, B, _C, NR);
                 micro_dxpy(mmm, nnn, C + mmi * MR * ldc + nni * NR, ldc, _C);
             }
@@ -372,7 +365,7 @@ void pack_arc(
         B_acc = B;
         for (uint64_t kki = 0; UNLIKELY(kki < kkc); ++kki)
         {
-            const register uint64_t kkk = kki != kkc - 1 ? CACHE_ELEM : kkr;
+            const uint64_t kkk = kki != kkc - 1 ? CACHE_ELEM : kkr;
 
             if (LIKELY(mmm == MR && kkk == CACHE_ELEM))
             {
@@ -383,10 +376,10 @@ void pack_arc(
 
                 inner_acc = B_acc;
                 asm volatile(
-                    VLD4(0, 4, 8, 12, A0)  //
-                    VLD4(1, 5, 9, 13, A1)  //
-                    VLD4(2, 6, 10, 14, A2) //
-                    VLD4(3, 7, 11, 15, A3) //
+                    VLD1_Q4(0, 4, 8, 12, A0)  //
+                    VLD1_Q4(1, 5, 9, 13, A1)  //
+                    VLD1_Q4(2, 6, 10, 14, A2) //
+                    VLD1_Q4(3, 7, 11, 15, A3) //
 
                     " st4   {v0.2d-v3.2d},   [%[B]], #64  \t\n"
                     " st4   {v4.2d-v7.2d},   [%[B]], #64  \t\n"
@@ -462,44 +455,29 @@ struct thread_info
     double *_B;
 };
 
-__forceinline void *middle_kernel(const uint64_t m, const uint64_t n, const uint64_t k, const double *A,
-                                  const uint64_t lda, const double *B, const uint64_t ldb, double *C, const uint64_t ldc, double *_A, double *_B)
+__forceinline void middle_kernel(const uint64_t m, const uint64_t n, const uint64_t k, const double *A,
+                                 const uint64_t lda, const double *B, const uint64_t ldb, double *C, const uint64_t ldc, double *_A, double *_B)
 {
     const uint64_t mc = ROUND_UP(m, MB);
-    uint64_t mr = MB;
-    const uint64_t mr_ = m % MB;
-    if (mr_ != 0)
-    {
-        mr = mr_;
-    }
+    const uint64_t mr = m % MB;
     const uint64_t nc = ROUND_UP(n, NB);
-    uint64_t nr = NB;
-    const uint64_t nr_ = n % NB;
-    if (nr_ != 0)
-    {
-        nr = nr_;
-    }
+    const uint64_t nr = n % NB;
     const uint64_t kc = ROUND_UP(k, KB);
-    uint64_t kr = KB;
-    const uint64_t kr_ = k % KB;
-    if (kr_ != 0)
-    {
-        kr = kr_;
-    }
+    const uint64_t kr = k % KB;
 
     for (uint64_t ni = 0; ni < nc; ++ni)
     {
-        const uint64_t nn = ni != nc - 1 ? NB : nr;
+        const uint64_t nn = (ni != nc - 1 || nr == 0) ? NB : nr;
 
         for (uint64_t ki = 0; ki < kc; ++ki)
         {
-            const register uint64_t kk = ki != kc - 1 ? KB : kr;
+            const uint64_t kk = (ki != kc - 1 || kr == 0) ? KB : kr;
 
             pack_brr(kk, nn, B + ki * KB * ldb + ni * NB, ldb, _B);
 
             for (uint64_t mi = 0; mi < mc; ++mi)
             {
-                const register uint64_t mm = mi != mc - 1 ? MB : mr;
+                const uint64_t mm = (mi != mc - 1 || mr == 0) ? MB : mr;
 
                 pack_arc(mm, kk, A + mi * MB * lda + ki * KB, lda, _A);
 
@@ -507,8 +485,6 @@ __forceinline void *middle_kernel(const uint64_t m, const uint64_t n, const uint
             }
         }
     }
-
-    return NULL;
 }
 
 static void *thread_routine(
@@ -555,7 +531,7 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
 
 #ifdef OC
     static double *_A = NULL;
-    static double *_B = NULL;
+    static double *_B;
 
 #ifndef DISABLE_MEMORY_BUFFER
     if (_A == NULL)
