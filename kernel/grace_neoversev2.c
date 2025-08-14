@@ -37,6 +37,9 @@
 #define MR 4
 #define NR 8
 
+#define _A_SIZE (sizeof(double) * (MB + MR) * KB)
+#define _B_SIZE (sizeof(double) * KB * (NB + NR))
+
 #if defined(USE_LDP)
 #define VLD1_Q2(r1, r2, source) \
     " ldp q" #r1 ", q" #r2 ", [%[" #source "]] \t\n"
@@ -420,17 +423,17 @@ void pack_brr(
     const uint64_t nnc = ROUND_UP(nn, NR);
     for (uint64_t j = 0; j < kk; ++j)
     {
-        const register double *Bm = B;
-        register double *_Bm = _B;
+        register const double *B_acc = B;
+        register double *_B_acc = _B;
 #pragma unroll(NB / NR)
         for (uint64_t nni = 0; LIKELY(nni < nnc); ++nni)
         {
             register float64x2x4_t vec;
-            vec = vld1q_f64_x4(Bm);
-            vst1q_f64_x4(_Bm, vec);
+            vec = vld1q_f64_x4(B_acc);
+            vst1q_f64_x4(_B_acc, vec);
 
-            Bm += NR;
-            _Bm += kk * NR;
+            B_acc += NR;
+            _B_acc += kk * NR;
         }
         B += ldb;
         _B += NR;
@@ -440,6 +443,7 @@ void pack_brr(
 struct thread_info
 {
     pthread_t tid;
+    uint64_t pid;
     uint64_t m;
     uint64_t n;
     uint64_t k;
@@ -452,6 +456,18 @@ struct thread_info
     double *_A;
     double *_B;
 };
+
+#ifdef OC
+static double *_A = NULL;
+static double *_B = NULL;
+#else
+static double *_A[TOTAL_CORE] = {
+    NULL,
+};
+static double *_B[TOTAL_CORE] = {
+    NULL,
+};
+#endif
 
 __forceinline void middle_kernel(const uint64_t m, const uint64_t n, const uint64_t k, const double *A,
                                  const uint64_t lda, const double *B, const uint64_t ldb, double *C, const uint64_t ldc, double *_A, double *_B)
@@ -485,10 +501,11 @@ __forceinline void middle_kernel(const uint64_t m, const uint64_t n, const uint6
     }
 }
 
-static void *thread_routine(
-    void *arg)
+#ifndef OC
+static void *thread_routine(void *arg)
 {
     struct thread_info *tinfo = arg;
+    const uint64_t pid = tinfo->pid;
     const uint64_t m = tinfo->m;
     const uint64_t n = tinfo->n;
     const uint64_t k = tinfo->k;
@@ -498,13 +515,12 @@ static void *thread_routine(
     const uint64_t ldb = tinfo->ldb;
     double *C = tinfo->C;
     const uint64_t ldc = tinfo->ldc;
-    double *_A = tinfo->_A;
-    double *_B = tinfo->_B;
 
-    middle_kernel(m, n, k, A, lda, B, ldb, C, ldc, _A, _B);
+    middle_kernel(m, n, k, A, lda, B, ldb, C, ldc, _A[pid], _B[pid]);
 
     return NULL;
 }
+#endif
 
 __forceinline uint64_t min(const uint64_t a, const uint64_t b)
 {
@@ -534,19 +550,11 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
 #ifndef DISABLE_MEMORY_BUFFER
     if (_A == NULL)
     {
-#endif
-        _A = numa_alloc(sizeof(double) * (MB + MR) * KB);
-        _B = numa_alloc(sizeof(double) * KB * (NB + NR));
-#ifndef DISABLE_MEMORY_BUFFER
+        _A = numa_alloc(_A_SIZE);
+        _B = numa_alloc(_B_SIZE);
     }
-#endif
 
     middle_kernel(m, n, k, A, lda, B, ldb, C, ldc, _A, _B);
-
-#ifdef DISABLE_MEMORY_BUFFER
-    numa_free(_A, sizeof(double) * (MB + MR) * KB);
-    numa_free(_B, sizeof(double) * KB * (NB + NR));
-#endif
 #else
     const uint64_t total_m_jobs = ROUND_UP(m, MR);
     const uint64_t min_each_m_jobs = total_m_jobs / CM;
@@ -590,16 +598,13 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
         const double *B_start = B + my_n_start * 1;
         double *C_start = C + my_m_start * ldc + my_n_start * 1;
 
-#ifndef DISABLE_MEMORY_BUFFER
         if (_A[pid] == NULL)
         {
-#endif
-            _A[pid] = numa_alloc(sizeof(double) * (MB + MR) * KB);
-            _B[pid] = numa_alloc(sizeof(double) * KB * (NB + NR));
-#ifndef DISABLE_MEMORY_BUFFER
+            _A[pid] = numa_alloc(_A_SIZE);
+            _B[pid] = numa_alloc(_B_SIZE);
         }
-#endif
 
+        tinfo[pid].pid = pid;
         tinfo[pid].m = my_m_size;
         tinfo[pid].n = my_n_size;
         tinfo[pid].k = k;
@@ -625,11 +630,34 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
     {
         void *res;
         pthread_join(tinfo[pid].tid, &res);
-
-#ifdef DISABLE_MEMORY_BUFFER
-        numa_free(_A[pid], sizeof(double) * (MB + MR) * KB);
-        numa_free(_B[pid], sizeof(double) * KB * (NB + NR));
+    }
 #endif
+}
+
+void initialize_blocks()
+{
+#ifdef OC
+    _A = numa_alloc(_A_SIZE);
+    _B = numa_alloc(_B_SIZE);
+#else
+    for (uint64_t i = 0; i < TOTAL_CORE; ++i)
+    {
+        _A[i] = numa_alloc(_A_SIZE);
+        _B[i] = numa_alloc(_B_SIZE);
+    }
+#endif
+}
+
+void finalize_blocks()
+{
+#ifdef OC
+    numa_free(_A, _A_SIZE);
+    numa_free(_B, _B_SIZE);
+#else
+    for (uint64_t i = 0; i < TOTAL_CORE; ++i)
+    {
+        numa_free(_A[i], _A_SIZE);
+        numa_free(_B[i], _B_SIZE);
     }
 #endif
 }
