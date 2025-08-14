@@ -546,10 +546,6 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
     assert(beta == 1.0);
 
 #ifdef OC
-    static double *_A = NULL;
-    static double *_B;
-
-#ifndef DISABLE_MEMORY_BUFFER
     if (_A == NULL)
     {
         _A = numa_alloc(_A_SIZE);
