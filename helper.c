@@ -47,9 +47,6 @@ void memcpy_parallel(void *restrict dest, const void *restrict src, size_t n)
   }
 }
 
-extern void initialize_blocks();
-extern void finalize_blocks();
-
 void initialize(void **arg_in, void **arg_out, void **arg_val)
 {
   void **arr = malloc(sizeof(void *) * 3);
@@ -60,8 +57,6 @@ void initialize(void **arg_in, void **arg_out, void **arg_val)
   arr[2] = malloc(M * N * sizeof(double));
 
   *arg_out = malloc(M * N * sizeof(double));
-
-  initialize_blocks();
 
   set_data(arr[0], M * K, 100, -1.0, 1.0);
   set_data(arr[1], K * N, 200, -1.0, 1.0);
@@ -86,8 +81,6 @@ void finalize(void *arg_in, void *arg_out, void *arg_val)
   free(arr);
 
   free(arg_out);
-
-  finalize_blocks();
 
   if (arg_val != NULL)
   {
