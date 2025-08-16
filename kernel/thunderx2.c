@@ -524,6 +524,48 @@ static void *thread_routine(void *arg)
 }
 #endif
 
+__attribute__((constructor)) void alloc_buffers()
+{
+#ifdef OC
+    if (_A == NULL)
+    {
+        _A = numa_alloc(_A_SIZE);
+        _B = numa_alloc(_B_SIZE);
+    }
+#else
+    if (_A[0] == NULL)
+    {
+        for (uint64_t i = 0; i < TOTAL_CORE; ++i)
+        {
+            _A[i] = numa_alloc(_A_SIZE);
+            _B[i] = numa_alloc(_B_SIZE);
+        }
+    }
+#endif
+}
+
+__attribute__((destructor)) void free_buffers()
+{
+#ifdef OC
+    if (_A != NULL)
+    {
+        numa_free(_A, _A_SIZE);
+        numa_free(_B, _B_SIZE);
+        _A = NULL;
+    }
+#else
+    if (_A[0] != NULL)
+    {
+        for (uint64_t i = 0; i < TOTAL_CORE; ++i)
+        {
+            numa_free(_A[i], _A_SIZE);
+            numa_free(_B[i], _B_SIZE);
+        }
+        _A[0] = NULL;
+    }
+#endif
+}
+
 __forceinline uint64_t min(const uint64_t a, const uint64_t b)
 {
     return a < b ? a : b;
@@ -545,13 +587,9 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
     assert(alpha == 1.0);
     assert(beta == 1.0);
 
-#ifdef OC
-    if (_A == NULL)
-    {
-        _A = numa_alloc(_A_SIZE);
-        _B = numa_alloc(_B_SIZE);
-    }
+    alloc_buffers();
 
+#ifdef OC
     middle_kernel(m, n, k, A, lda, B, ldb, C, ldc, _A, _B);
 #else
     const uint64_t total_m_jobs = ROUND_UP(m, MR);
@@ -592,12 +630,6 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
         const double *B_start = B + my_n_start * 1;
         double *C_start = C + my_m_start * ldc + my_n_start * 1;
 
-        if (_A[pid] == NULL)
-        {
-            _A[pid] = numa_alloc(_A_SIZE);
-            _B[pid] = numa_alloc(_B_SIZE);
-        }
-
         tinfo[pid].pid = pid;
         tinfo[pid].m = my_m_size;
         tinfo[pid].n = my_n_size;
@@ -624,34 +656,6 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
     {
         void *res;
         pthread_join(tinfo[pid].tid, &res);
-    }
-#endif
-}
-
-void initialize_blocks()
-{
-#ifdef OC
-    _A = numa_alloc(_A_SIZE);
-    _B = numa_alloc(_B_SIZE);
-#else
-    for (uint64_t i = 0; i < TOTAL_CORE; ++i)
-    {
-        _A[i] = numa_alloc(_A_SIZE);
-        _B[i] = numa_alloc(_B_SIZE);
-    }
-#endif
-}
-
-void finalize_blocks()
-{
-#ifdef OC
-    numa_free(_A, _A_SIZE);
-    numa_free(_B, _B_SIZE);
-#else
-    for (uint64_t i = 0; i < TOTAL_CORE; ++i)
-    {
-        numa_free(_A[i], _A_SIZE);
-        numa_free(_B[i], _B_SIZE);
     }
 #endif
 }
