@@ -568,13 +568,6 @@ void call_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
     pthread_attr_t attr;
     pthread_attr_init(&attr);
 
-    static double *_A[TOTAL_CORE] = {
-        NULL,
-    };
-    static double *_B[TOTAL_CORE] = {
-        NULL,
-    };
-
     for (uint64_t pid = 0; pid < TOTAL_CORE; ++pid)
     {
 #ifndef OC
